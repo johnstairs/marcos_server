@@ -52,12 +52,9 @@ public:
 	void halt_and_reset();
 private:
 	// Config variables
-	unsigned _pc_tries_limit = 1000000; // how long to wait if PC isn't changing
-	unsigned _idle_tries_limit = 1000000; // how long to wait for the end of the sequence if memory is fully written
 	unsigned _read_tries_limit = 1000; // retry attempts for each data sample
 	unsigned _halt_tries_limit = 1000000; // read retry attemps for HALT state at the end of the sequence
 	unsigned _gpa_idle_tries_limit = 1000; // how long to wait for GPA interfaces to become idle at the end of a sequence
-	unsigned _samples_per_halt_check = 2; // how often to check halt status (in read samples) during normal readout
 	unsigned _min_rx_reads_per_loop = 16;
 	unsigned _max_rx_reads_per_loop = 1024;
 

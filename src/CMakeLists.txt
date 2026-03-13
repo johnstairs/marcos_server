@@ -10,12 +10,12 @@ if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL armv7l)
    endif()
 
    # compile in release mode on the ARM
-   set (CMAKE_C_FLAGS "-static -O3 -mcpu=${ARM_CPU_NAME} -mtune=${ARM_CPU_NAME} -mfpu=neon -mfloat-abi=hard -Wall -std=c11")
-   set (CMAKE_CXX_FLAGS "-static -O3 -mcpu=${ARM_CPU_NAME} -mtune=${ARM_CPU_NAME} -mfpu=neon -mfloat-abi=hard -Wall -std=c++17")
+   set (CMAKE_C_FLAGS "-static -O3 -mcpu=${ARM_CPU_NAME} -mtune=${ARM_CPU_NAME} -mfpu=neon -mfloat-abi=hard -Wall -Werror -std=c11")
+   set (CMAKE_CXX_FLAGS "-static -O3 -mcpu=${ARM_CPU_NAME} -mtune=${ARM_CPU_NAME} -mfpu=neon -mfloat-abi=hard -Wall -Werror -std=c++17")
 else()
    # compile in debug mode on the host PC for testing
-   set (CMAKE_C_FLAGS "-O0 -g -Wall -std=c11")
-   set (CMAKE_CXX_FLAGS "-O0 -g -Wall -std=c++17")
+   set (CMAKE_C_FLAGS "-O0 -g -Wall -Werror -std=c11")
+   set (CMAKE_CXX_FLAGS "-O0 -g -Wall -Werror -std=c++17")
    # set (CMAKE_C_FLAGS "-static -O3 -Wall -std=c11")
    # set (CMAKE_CXX_FLAGS "-static -O3 -std=c++14")
 endif()

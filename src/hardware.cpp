@@ -38,7 +38,7 @@ int hardware::run_request(server_action &sa) {
 	}
 
 	// Halt and reset; returns true if the FSM has already halted (may take up to 2ms to halt the HDL if it's counting down
-	auto hr = sa.get_command_and_start_reply("halt_and_reset", status);
+	sa.get_command_and_start_reply("halt_and_reset", status);
 	if (status == 1) {
 		++commands_understood;
 		halt_and_reset();
@@ -49,7 +49,7 @@ int hardware::run_request(server_action &sa) {
 	}
 
 	// Read directly from memory [TODO: implement]
-	auto rm = sa.get_command_and_start_reply("read_mem", status);
+	sa.get_command_and_start_reply("read_mem", status);
 	if (status == 1) {
 		++commands_understood;
 		mpack_write(wr, c_ok);
@@ -151,7 +151,7 @@ int hardware::run_request(server_action &sa) {
 	}
 
 	// read all outstanding data from RX FIFOs
-	auto rr = sa.get_command_and_start_reply("read_rx", status);
+	sa.get_command_and_start_reply("read_rx", status);
 	if (status == 1) {
 		++commands_understood;
 		char t[100];
@@ -319,7 +319,7 @@ int hardware::run_request(server_action &sa) {
 					mem_offset += second_bytes;
 				} else { // no wrapping
 					debug_printf("hw_memcpy: %zu, %zu, %u\n", local_mem_offset, mem_offset, bytes_to_copy);
-					auto k = (char *)hw_memcpy(_mar_mem + local_mem_offset,
+					[[maybe_unused]] auto k = (char *)hw_memcpy(_mar_mem + local_mem_offset,
 					          rundata + mem_offset, bytes_to_copy);
 					debug_printf("bytes copied: %zu\n", k - _mar_mem - local_mem_offset);
 					mem_offset += bytes_to_copy;
@@ -414,7 +414,7 @@ int hardware::run_request(server_action &sa) {
 
 		// readout of any final data remaining at the end
 		unsigned read_tries = 0;
-		unsigned final_rx_read = 0;
+		[[maybe_unused]] unsigned final_rx_read = 0;
 		// while (read_tries < _halt_tries_limit) {
 		// 	final_rx_read += read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
 		// }
