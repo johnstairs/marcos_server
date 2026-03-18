@@ -12,15 +12,15 @@
 // Memory-mapped device sizes
 static const unsigned PAGESIZE = sysconf(_SC_PAGESIZE); // should be 4096 (4KiB) on both x86_64 and ARM
 static const unsigned SLCR_SIZE = PAGESIZE,
-	MARGA_SIZE = 128*PAGESIZE,
-	MARGA_MEM_SIZE = 64*PAGESIZE;
+                      MARGA_SIZE = 128 * PAGESIZE,
+                      MARGA_MEM_SIZE = 64 * PAGESIZE;
 static const unsigned MARGA_MEM_MASK = 0x3ffff;
 static const unsigned MARGA_RX_FIFO_SPACE = 16384;
 
 // marga internal states
 static const unsigned MAR_STATE_IDLE = 0, MAR_STATE_PREPARE = 1, MAR_STATE_RUN = 2,
-	MAR_STATE_COUNTDOWN = 3, MAR_STATE_TRIG = 4, MAR_STATE_TRIG_FOREVER = 5,
-	MAR_STATE_HALT = 8;
+                      MAR_STATE_COUNTDOWN = 3, MAR_STATE_TRIG = 4, MAR_STATE_TRIG_FOREVER = 5,
+                      MAR_STATE_HALT = 8;
 
 static const unsigned MAR_BUFS = 24;
 static const unsigned MAR_BUF_ALL_EMPTY = (1 << MAR_BUFS) - 1;
@@ -38,9 +38,9 @@ public:
 
 	int run_request(server_action &sa);
 
-        /// @brief Set up shared memory, control registers etc; these
-        /// aspects are not client-configurable. If compiled on x86,
-        /// just mimics the shared memory.
+	/// @brief Set up shared memory, control registers etc; these
+	/// aspects are not client-configurable. If compiled on x86,
+	/// just mimics the shared memory.
 	void init_mem();
 
 	/// @brief Halt the FSM, interrupting any ongoing sequence and/or readout in progress
@@ -60,8 +60,8 @@ private:
 
 	// Peripheral register addresses in PL
 	volatile uint32_t *_slcr, *_mar_base, *_ctrl, *_direct, *_exec, *_status,
-		*_status_latch, *_buf_err, *_buf_full, *_buf_empty, *_rx_locs,
-		*_rx0_i_data, *_rx1_i_data, *_rx0_q_data, *_rx1_q_data;
+	        *_status_latch, *_buf_err, *_buf_full, *_buf_empty, *_rx_locs,
+	        *_rx0_i_data, *_rx1_i_data, *_rx0_q_data, *_rx1_q_data;
 
 	volatile char *_mar_mem;
 
@@ -79,7 +79,7 @@ private:
 	// methods to support simulation; most efficient to inline them
 	inline void wr32(volatile uint32_t *addr, uint32_t data);
 	inline uint32_t rd32(volatile uint32_t *addr);
-	void* hw_memcpy(volatile void *s1, const void *s2, size_t n);
+	void *hw_memcpy(volatile void *s1, const void *s2, size_t n);
 	size_t hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffer, size_t bufsize);
 };
 

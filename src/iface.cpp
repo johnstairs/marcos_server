@@ -14,25 +14,24 @@ std::string version_str(unsigned ver) {
 	return v.str();
 }
 
-size_t read_stream(mpack_tree_t* tree, char* buffer, size_t count) {
-	stream_t* stream = (stream_t *)mpack_tree_context(tree);
+size_t read_stream(mpack_tree_t *tree, char *buffer, size_t count) {
+	stream_t *stream = (stream_t *)mpack_tree_context(tree);
 	ssize_t step = read(stream->fd, buffer, count);
 	if (step <= 0) mpack_tree_flag_error(tree, mpack_error_io);
 	return step;
 }
 
-void write_stream(mpack_writer_t* writer, const char* buffer, size_t count) {
-	stream_t* stream = (stream_t *)mpack_writer_context(writer);
+void write_stream(mpack_writer_t *writer, const char *buffer, size_t count) {
+	stream_t *stream = (stream_t *)mpack_writer_context(writer);
 	ssize_t amount = write(stream->fd, buffer, count);
 	if (amount <= 0) mpack_writer_flag_error(writer, mpack_error_io);
-//	return amount;
+	//	return amount;
 }
 
-server_action::server_action(mpack_node_t request_root, mpack_writer_t* writer):
-// server_action::server_action(mpack_node_t request_root, char *reply_buffer):
-//	_reply_buffer(reply_buffer)
-	_wr(writer)
-{
+server_action::server_action(mpack_node_t request_root, mpack_writer_t *writer) :
+    // server_action::server_action(mpack_node_t request_root, char *reply_buffer):
+    //	_reply_buffer(reply_buffer)
+    _wr(writer) {
 	auto r = request_root;
 	_request_type = mpack_node_uint(mpack_node_array_at(r, 0));
 	_reply_index = mpack_node_uint(mpack_node_array_at(r, 1));
@@ -45,7 +44,7 @@ server_action::server_action(mpack_node_t request_root, mpack_writer_t* writer):
 	mpack_start_array(_wr, 6);
 
 	if (_request_type == marcos_emergency_stop) mpack_write_u32(_wr, marcos_reply_error);
-//	else if (_request_type == marcos_close_server) mpack_write_u32(_wr,
+	//	else if (_request_type == marcos_close_server) mpack_write_u32(_wr,
 	else mpack_write_u32(_wr, marcos_reply);
 
 	mpack_write_u32(_wr, _reply_index + 1); // reply index for the client to keep track
@@ -64,7 +63,7 @@ size_t server_action::command_count() {
 	return mpack_node_map_count(_rd);
 }
 
-mpack_node_t server_action::get_command_and_start_reply(const char* cstr, int &status) {
+mpack_node_t server_action::get_command_and_start_reply(const char *cstr, int &status) {
 	mpack_node_t node = mpack_node_map_cstr_optional(_rd, cstr);
 	if (mpack_node_is_missing(node)) status = 0;
 	else if (mpack_node_is_nil(node)) status = -1;
@@ -186,14 +185,14 @@ iface::iface(unsigned port) {
 }
 
 void iface::init(unsigned port) {
-	if ( (_server_fd = socket(AF_INET, SOCK_STREAM, 0) ) < 0) {
+	if ((_server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 		perror("socket failed");
 		exit(EXIT_FAILURE);
 	}
 
 	int reuseaddr = 1; // whether to reuse the address
 	if (setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-	               (void *)&reuseaddr , sizeof(reuseaddr)) ) {
+	               (void *)&reuseaddr, sizeof(reuseaddr))) {
 		perror("setsockopt failed");
 		exit(EXIT_FAILURE);
 	}
@@ -208,21 +207,21 @@ void iface::init(unsigned port) {
 		exit(EXIT_FAILURE);
 	}
 
-	if ( listen(_server_fd, 10) ) {
+	if (listen(_server_fd, 10)) {
 		perror("listen failed");
 		exit(EXIT_FAILURE);
 	}
 }
 
 void iface::run_stream() {
-	const unsigned max_size = 1024*1024*32;
+	const unsigned max_size = 1024 * 1024 * 32;
 	const unsigned max_nodes = 8192;
 
 	char *reply_buf = (char *)malloc(max_size);
 
 	while (_run_iface) {
 		// block until a client connects
-		if((_stream_fd.fd = accept(_server_fd, NULL, NULL)) < 0) {
+		if ((_stream_fd.fd = accept(_server_fd, NULL, NULL)) < 0) {
 			// if((my_socket = accept(stream_fd.fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
 			fprintf(stderr, "[%s line %d] socket accept failed\n", __FILE__, __LINE__);
 			exit(EXIT_FAILURE);
@@ -243,7 +242,7 @@ void iface::run_stream() {
 			mpack_tree_parse(&tree); // blocking
 			//mpack_tree_try_parse(&tree); // non-blocking, for future use
 			mpack_error_t err = mpack_tree_error(&tree);
-			if ( err != mpack_ok) {
+			if (err != mpack_ok) {
 				if (err != mpack_error_io) {
 					// mpack_error_io thrown whenever the client disconnects.
 					// Haven't found a way around this so just ignoring it for now.

@@ -65,8 +65,8 @@ int hardware::run_request(server_action &sa) {
 			mpack_write(wr, c_err); // error
 		} else {
 			_slcr[2] = mpack_node_u32(mpack_node_array_at(fcwa1, 0));
-			_slcr[92] = (_slcr[92] & ~mpack_node_u32(mpack_node_array_at(fcwa1, 1)) )
-				| mpack_node_u32(mpack_node_array_at(fcwa1, 2));
+			_slcr[92] = (_slcr[92] & ~mpack_node_u32(mpack_node_array_at(fcwa1, 1)))
+			        | mpack_node_u32(mpack_node_array_at(fcwa1, 2));
 			mpack_write(wr, c_ok); // okay
 		}
 	} else if (status == -1) {
@@ -96,7 +96,7 @@ int hardware::run_request(server_action &sa) {
 	auto regidx = sa.get_command_and_start_reply("regrd", status);
 	if (status == 1) {
 		++commands_understood;
-		mpack_write(wr, rd32(_mar_base + mpack_node_u32(regidx) ));
+		mpack_write(wr, rd32(_mar_base + mpack_node_u32(regidx)));
 	}
 
 	// Read all registers
@@ -124,7 +124,7 @@ int hardware::run_request(server_action &sa) {
 		char t[100];
 
 		// uint32_t ro = *(uint32_t *)(GRAD_CTRL_REG_OFFSET);
-		if ( mpack_node_bin_size(mm) <= MARGA_MEM_SIZE ) {
+		if (mpack_node_bin_size(mm) <= MARGA_MEM_SIZE) {
 			size_t bytes_copied = hw_mpack_node_copy_data(mm, _mar_mem, MARGA_MEM_SIZE);
 			sprintf(t, "mar mem data bytes copied: %zu", bytes_copied);
 			sa.add_info(t);
@@ -165,7 +165,7 @@ int hardware::run_request(server_action &sa) {
 			sprintf(t, "no RX data received");
 			sa.add_warning(t);
 		} else {
-			mpack_start_map(wr, (rx0_elem ? 2:0) + (rx1_elem ? 2:0));
+			mpack_start_map(wr, (rx0_elem ? 2 : 0) + (rx1_elem ? 2 : 0));
 			if (rx0_elem) {
 				mpack_write_cstr(wr, "rx0_i");
 				mpack_start_array(wr, rx0_elem);
@@ -200,7 +200,7 @@ int hardware::run_request(server_action &sa) {
 
 		// ensure that nothing is currently running; halt if it is
 		auto exec = rd32(_exec);
-		if ( (exec >> 24) != MAR_STATE_IDLE) {
+		if ((exec >> 24) != MAR_STATE_IDLE) {
 			sprintf(t, "mar FSM was not idle when the run began");
 			sa.add_warning(t);
 
@@ -295,7 +295,7 @@ int hardware::run_request(server_action &sa) {
 					mem_buffer_underrun = true;
 					debug_printf("mem buf underrun\n");
 					break;
-				} else if (mem_offset - pc < MARGA_MEM_SIZE/4) {
+				} else if (mem_offset - pc < MARGA_MEM_SIZE / 4) {
 					// memory reserve only 1/4 full
 					++mem_buffer_low;
 					debug_printf("mem buf low\n");
@@ -309,7 +309,7 @@ int hardware::run_request(server_action &sa) {
 				size_t local_mem_offset = mem_offset & MARGA_MEM_MASK;
 
 				// check whether this copy will wrap
-				if ( local_mem_offset + bytes_to_copy > MARGA_MEM_SIZE) { // wrapping: copy in two parts
+				if (local_mem_offset + bytes_to_copy > MARGA_MEM_SIZE) { // wrapping: copy in two parts
 					int first_bytes = MARGA_MEM_SIZE - local_mem_offset;
 					int second_bytes = bytes_to_copy - first_bytes;
 					hw_memcpy(_mar_mem + local_mem_offset,
@@ -320,7 +320,7 @@ int hardware::run_request(server_action &sa) {
 				} else { // no wrapping
 					debug_printf("hw_memcpy: %zu, %zu, %u\n", local_mem_offset, mem_offset, bytes_to_copy);
 					[[maybe_unused]] auto k = (char *)hw_memcpy(_mar_mem + local_mem_offset,
-					          rundata + mem_offset, bytes_to_copy);
+					                                            rundata + mem_offset, bytes_to_copy);
 					debug_printf("bytes copied: %zu\n", k - _mar_mem - local_mem_offset);
 					mem_offset += bytes_to_copy;
 				}
@@ -329,7 +329,7 @@ int hardware::run_request(server_action &sa) {
 			// Read out RX
 			unsigned rx_locs = read_rx(rx0_i, rx0_q, rx1_i, rx1_q, rx_reads_per_loop);
 			// Simple dynamic FIFO read-out speed governor
-			if (rx_locs > MARGA_RX_FIFO_SPACE - 2*_max_rx_reads_per_loop) {
+			if (rx_locs > MARGA_RX_FIFO_SPACE - 2 * _max_rx_reads_per_loop) {
 				rx_full = true;
 				rx_full_mem_loc = old_pc;
 				// desperately try to clear the FIFOs
@@ -366,7 +366,7 @@ int hardware::run_request(server_action &sa) {
 		// gracefully reset the FSM if no errors occurred
 		if (finished) {
 			wr32(_ctrl, 0x0);
-		// emergency halt the FSM and reset the hardware
+			// emergency halt the FSM and reset the hardware
 		} else {
 			halt_and_reset();
 		}
@@ -428,7 +428,7 @@ int hardware::run_request(server_action &sa) {
 
 		// TODO make sure all the buffers and RX FIFOs are empty
 		unsigned buf_empty = rd32(_buf_empty);
-		if ( buf_empty != MAR_BUF_ALL_EMPTY ) {
+		if (buf_empty != MAR_BUF_ALL_EMPTY) {
 			sprintf(t, "output buffers were not empty at the end of sequence: 0x%08x", buf_empty);
 			sa.add_warning(t);
 		}
@@ -455,7 +455,7 @@ int hardware::run_request(server_action &sa) {
 			sprintf(t, "no RX data received");
 			sa.add_warning(t);
 		} else {
-			mpack_start_map(wr, (rx0_elem ? 2:0) + (rx1_elem ? 2:0) );
+			mpack_start_map(wr, (rx0_elem ? 2 : 0) + (rx1_elem ? 2 : 0));
 			if (rx0_elem) {
 				mpack_write_cstr(wr, "rx0_i");
 				mpack_start_array(wr, rx0_elem);
@@ -491,12 +491,12 @@ int hardware::run_request(server_action &sa) {
 		mpack_start_map(wr, 2); // Two elements in map
 		mpack_write_cstr(wr, "array1");
 		mpack_start_array(wr, data_size);
-		for (unsigned k{0}; k < data_size; ++k) mpack_write(wr, 1.01*k); // generic, needs C11
+		for (unsigned k{0}; k < data_size; ++k) mpack_write(wr, 1.01 * k); // generic, needs C11
 		mpack_finish_array(wr);
 
 		mpack_write_cstr(wr, "array2");
 		mpack_start_array(wr, data_size);
-		for (unsigned k{0}; k < data_size; ++k) mpack_write(wr, 1.01*(k+10)); // generic, needs C11
+		for (unsigned k{0}; k < data_size; ++k) mpack_write(wr, 1.01 * (k + 10)); // generic, needs C11
 		mpack_finish_array(wr);
 
 		mpack_finish_map(wr);
@@ -532,8 +532,8 @@ int hardware::run_request(server_action &sa) {
 
 		// reply will contain the three differences
 		int64_t null_ti = std::chrono::duration_cast<std::chrono::microseconds>(null_t - start_t).count(),
-			read_ti = std::chrono::duration_cast<std::chrono::microseconds>(read_t - null_t).count(),
-			write_ti = std::chrono::duration_cast<std::chrono::microseconds>(write_t - read_t).count();
+		        read_ti = std::chrono::duration_cast<std::chrono::microseconds>(read_t - null_t).count(),
+		        write_ti = std::chrono::duration_cast<std::chrono::microseconds>(write_t - read_t).count();
 
 		mpack_start_array(wr, 3);
 		mpack_write(wr, null_ti);
@@ -590,10 +590,11 @@ void hardware::init_mem() {
 	int fd = open(tempfile, O_RDWR);
 	if (fd < 0) {
 		char errstr[1024];
-		size_t filesize_KiB =  4 * END_OFFSET / EMU_PAGESIZE; // 4 because 4 KiB / page
-		sprintf(errstr, "Failed to open simulated memory device.\n"\
-		        "Check whether %s exists, and if not create it using:\n"\
-		        "fallocate -l %ldKiB %s", tempfile, filesize_KiB, tempfile);
+		size_t filesize_KiB = 4 * END_OFFSET / EMU_PAGESIZE; // 4 because 4 KiB / page
+		sprintf(errstr, "Failed to open simulated memory device.\n"
+		                "Check whether %s exists, and if not create it using:\n"
+		                "fallocate -l %ldKiB %s",
+		        tempfile, filesize_KiB, tempfile);
 		throw hw_error(errstr);
 	}
 #endif
@@ -603,8 +604,8 @@ void hardware::init_mem() {
 	// VN: I'm not sure why in the original server, different data
 	// types were used for some of these. Perhaps to allow
 	// different access widths?
-	_slcr = (uint32_t *) mmap(NULL, SLCR_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SLCR_OFFSET);
-	_mar_base = (uint32_t *) mmap(NULL, MARGA_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, MARGA_OFFSET);
+	_slcr = (uint32_t *)mmap(NULL, SLCR_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SLCR_OFFSET);
+	_mar_base = (uint32_t *)mmap(NULL, MARGA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, MARGA_OFFSET);
 
 	// Map the control and status registers
 	_ctrl = _mar_base + 0;
@@ -624,7 +625,7 @@ void hardware::init_mem() {
 	_rx1_q_data = _mar_base + 14; // RX1 q data
 
 	// /2 since mem is halfway in address space, /4 to convert to 32-bit instead of byte addressing
-	_mar_mem = reinterpret_cast<volatile char *>(_mar_base + MARGA_SIZE/2/4);
+	_mar_mem = reinterpret_cast<volatile char *>(_mar_base + MARGA_SIZE / 2 / 4);
 }
 
 void hardware::halt() {
@@ -639,17 +640,17 @@ void hardware::halt() {
 	// Wait a while for all the output buffers to empty
 	unsigned k = 0;
 	while (k < _halt_tries_limit) {
-		if ( rd32(_buf_empty) == MAR_BUF_ALL_EMPTY ) break;
+		if (rd32(_buf_empty) == MAR_BUF_ALL_EMPTY) break;
 		++k;
 	}
 
 	// Empty RX FIFOs (do this last)
 	if (rd32(_rx_locs)) { // nonzero number of elements in FIFOs
-		std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;  // throw away these vectors
+		std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q; // throw away these vectors
 		read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
 	}
 
-	while ( (rd32(_exec) >> 24 == MAR_STATE_COUNTDOWN) && k < _halt_tries_limit ) {
+	while ((rd32(_exec) >> 24 == MAR_STATE_COUNTDOWN) && k < _halt_tries_limit) {
 		++k;
 	}
 	wr32(_ctrl, 0x0); // set FSM to idle (not explicitly halted)
@@ -686,10 +687,10 @@ unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &
 		if (reads >= max_reads) break;
 
 		bool read_fifo0 = false, read_fifo1 = false;
-		if (fifo1_locs > 2*fifo0_locs) {
+		if (fifo1_locs > 2 * fifo0_locs) {
 			// too much data in fifo1, read it exclusively
 			read_fifo1 = true;
-		} else if (fifo0_locs > 2*fifo1_locs) {
+		} else if (fifo0_locs > 2 * fifo1_locs) {
 			// too much data in fifo0, read it exclusively
 			read_fifo0 = true;
 		} else { // read both
@@ -727,12 +728,12 @@ void hardware::wr32(volatile uint32_t *addr, uint32_t data) {
 	if (addr >= _mar_base && addr < _mar_base + MARGA_SIZE) {
 		// do byte-address arithmetic
 		auto offs_addr = reinterpret_cast<volatile char *>(addr)
-			- reinterpret_cast<volatile char *>(_mar_base);
+		        - reinterpret_cast<volatile char *>(_mar_base);
 		// printf("addresses 0x%0lx, 0x%0lx\n", addr, _mar_base);
 		// printf("write mar 0x%0lx, 0x%08x\n", offs_addr, data);
 		mm->wr32(offs_addr, data); // convert to byte addressing
 	} else {
-		printf("write addr 0x%0lx, 0x%08x NOT SIMULATED\n", (size_t) addr, data);
+		printf("write addr 0x%0lx, 0x%08x NOT SIMULATED\n", (size_t)addr, data);
 	}
 #else
 	*addr = data;
@@ -744,11 +745,11 @@ uint32_t hardware::rd32(volatile uint32_t *addr) {
 	if (addr >= _mar_base && addr < _mar_base + MARGA_SIZE) {
 		// do byte-address arithmetic
 		auto offs_addr = reinterpret_cast<volatile char *>(addr)
-			- reinterpret_cast<volatile char *>(_mar_base);
+		        - reinterpret_cast<volatile char *>(_mar_base);
 		// printf("read mar 0x%0lx\n", offs_addr);
 		return mm->rd32(offs_addr); // convert to byte addressing
 	} else {
-		printf("read addr 0x%0lx NOT SIMULATED\n", (size_t) addr);
+		printf("read addr 0x%0lx NOT SIMULATED\n", (size_t)addr);
 		return 0;
 	}
 #else
@@ -756,7 +757,7 @@ uint32_t hardware::rd32(volatile uint32_t *addr) {
 #endif
 }
 
-void* hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
+void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
 #ifdef VERILATOR_BUILD
 	// copy the data via individual 32b bus writes
 	auto *s1u = reinterpret_cast<volatile uint32_t *>(s1);
@@ -781,7 +782,7 @@ size_t hardware::hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffe
 	// TODO: check pointer arithmetic!
 	auto tmp_u32 = reinterpret_cast<uint32_t *>(tmp);
 	size_t offset = 0;
-	for (size_t k = 0; k < bytes_copied/4; ++k) {
+	for (size_t k = 0; k < bytes_copied / 4; ++k) {
 		wr32(reinterpret_cast<volatile uint32_t *>(buffer + offset), tmp_u32[k]);
 		offset += 4;
 	}
