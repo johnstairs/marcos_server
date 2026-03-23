@@ -758,6 +758,7 @@ uint32_t hardware::rd32(volatile uint32_t *addr) {
 }
 
 void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
+	assert(n % 4 == 0 && "hw_memcpy: size must be a multiple of 4 (FPGA word size)");
 #ifdef VERILATOR_BUILD
 	// copy the data via individual 32b bus writes
 	auto *s1u = reinterpret_cast<volatile uint32_t *>(s1);
@@ -768,7 +769,17 @@ void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
 	while (nu-- != 0) wr32(s1u++, *s2u++);
 	return (void *)s1u;
 #else
-	return memcpy((void *)s1, s2, n);
+	// Use individual 32-bit volatile writes rather than memcpy.
+	// At high optimisation levels, memcpy can be lowered to wide
+	// (e.g. NEON) stores whose AXI bus transactions silently
+	// corrupt data written to the FPGA BRAM.
+	auto *d = reinterpret_cast<volatile uint32_t *>(s1);
+	auto *s = reinterpret_cast<const uint32_t *>(s2);
+	size_t nu = n / 4;
+	while (nu-- != 0) {
+		*d++ = *s++;
+	}
+	return (void *)d;
 #endif
 }
 
