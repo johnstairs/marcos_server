@@ -208,7 +208,16 @@ int hardware::run_request(server_action &sa) {
 			wr32(_ctrl, 0x2); // set bit 1 to halt
 		}
 
+		for (int tries = 0; tries < 100; tries++) {
+			std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;
+			read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
+			if (!rx0_i.empty() or !rx0_q.empty() or !rx1_i.empty() or !rx1_q.empty()) {
+				tries = 0; // reset tries if we got new data
+			}
+		}
+
 		const size_t total_bytes_to_copy = mpack_node_bin_size(runs);
+		debug_printf("total bytes to copy: %zu\n", total_bytes_to_copy);
 		const char *rundata = (char *)mpack_node_bin_data(runs);
 		size_t mem_offset = 0;
 
@@ -230,6 +239,10 @@ int hardware::run_request(server_action &sa) {
 
 		// check execution state for issues periodically
 		const unsigned execution_check_interval = 20;
+
+		// delta thresholds for detecting buffer issues
+		const int64_t warn_forward = (int64_t)(MARGA_MEM_SIZE / 4);
+		const int64_t error_forward = (int64_t)(MARGA_MEM_SIZE / 2);
 
 		// monitor buffer-low and buffer-underrun events
 		unsigned mem_buffer_low = 0;
@@ -257,50 +270,61 @@ int hardware::run_request(server_action &sa) {
 		// main copying and reading loop
 		unsigned execution_loops = 0;
 		// track program counter execution
-		size_t pc_offset = 0, old_pc_hw = 0, old_pc = 0;
+		int64_t total_pc = 0;
+		size_t last_pc_hw = 0, old_pc = 0;
 		while (not finished) {
 			uint32_t exec = rd32(_exec);
 			uint32_t state = exec >> 24;
 			size_t pc_hw = (exec & 0xffffff) << 2; // convert to mem offset
 
-			if (pc_hw + 16 < old_pc_hw) {
-				// extra 16 since sometimes the PC can
-				// go back a few instructions when
-				// waiting/pausing
-				debug_printf("PC wrapped\n");
-				pc_offset += MARGA_MEM_SIZE;
-			}
-			old_pc_hw = pc_hw;
+			// Modular delta-accumulation: derive forward/backward
+			// movement from the difference in raw PC values.
+			// Values very close to MARGA_MEM_SIZE are treated
+			// as backtracks, as sometimes the PC can go back a few instructions.
+			// Everything else is forward.
+			const uint32_t max_backtrack = 16;
+			uint32_t raw_delta = (uint32_t)(pc_hw - last_pc_hw) & MARGA_MEM_MASK;
+			int64_t delta;
+			if (raw_delta >= MARGA_MEM_SIZE - max_backtrack) {
+				delta = (int64_t)raw_delta - (int64_t)MARGA_MEM_SIZE; // backtrack
+			} else {
+				delta = (int64_t)raw_delta; // forward advance
 
-			size_t pc = pc_hw + pc_offset;
-			// unwrap pc
-			debug_printf("pc_hw %zu, old_pc_hw %zu, pc %zu\n", pc_hw, old_pc_hw, pc);
+				// Threshold checks on forward movement magnitude:
+				// large deltas indicate the poll loop fell behind
+				// the FPGA's execution rate.
+				if (delta > error_forward) {
+					mem_buffer_underrun = true;
+					debug_printf("mem buf underrun: delta=%ld, pc_hw=%zu, last_pc_hw=%zu\n",
+					             (long)delta, pc_hw, last_pc_hw);
+					break;
+				} else if (delta > warn_forward) {
+					++mem_buffer_low;
+					debug_printf("mem buf low: delta=%ld, pc_hw=%zu, last_pc_hw=%zu\n",
+					             (long)delta, pc_hw, last_pc_hw);
+				}
+			}
+
+			total_pc += delta;
+			last_pc_hw = pc_hw;
+
+			size_t pc = (size_t)total_pc;
+			debug_printf("pc_hw %zu, last_pc_hw %zu, pc %zu, delta %ld\n", pc_hw, last_pc_hw, pc, (long)delta);
 
 			size_t total_bytes_remaining = total_bytes_to_copy - mem_offset;
 			int bytes_to_copy = 0;
 			if (total_bytes_remaining != 0) {
 				// check whether data needs copying in this round
 				//
-				// -16 to keep a buffer zone of 4 un-copied
+				// -max_backtrack to keep a buffer zone of un-copied
 				// instructions before PC location
-				bytes_to_copy = pc - mem_offset + MARGA_MEM_SIZE - 16;
-				if (bytes_to_copy > (int)total_bytes_remaining) bytes_to_copy = total_bytes_remaining;
+				bytes_to_copy = pc - mem_offset + MARGA_MEM_SIZE - max_backtrack;
+				if (bytes_to_copy > (int)total_bytes_remaining) {
+					bytes_to_copy = total_bytes_remaining;
+				}
 			}
 
 			if (bytes_to_copy > 0) {
-				// Monitor memory reserve during streaming
-				if (pc > mem_offset) {
-					// memory reserve has run dry
-					bytes_to_copy = 0;
-					mem_buffer_underrun = true;
-					debug_printf("mem buf underrun\n");
-					break;
-				} else if (mem_offset - pc < MARGA_MEM_SIZE / 4) {
-					// memory reserve only 1/4 full
-					++mem_buffer_low;
-					debug_printf("mem buf low\n");
-				}
-
 				if (bytes_to_copy > (int)max_bytes_to_copy) {
 					// avoid starving the RX for time
 					bytes_to_copy = max_bytes_to_copy;
@@ -382,10 +406,10 @@ int hardware::run_request(server_action &sa) {
 
 		// post-mortem reporting
 		if (mem_buffer_underrun) {
-			sprintf(t, "memory buffer underrun around byte address 0x%0zx", old_pc);
+			sprintf(t, "memory buffer underrun: FPGA PC advanced >%zu bytes in one poll interval", (size_t)error_forward);
 			sa.add_error(t);
 		} else if (mem_buffer_low) {
-			sprintf(t, "memory buffer low for %u inner loop cycles", mem_buffer_low);
+			sprintf(t, "memory buffer low %u times: FPGA PC advanced >%zu bytes in one poll interval", mem_buffer_low, (size_t)warn_forward);
 			sa.add_warning(t);
 		} else if (mem_offset != total_bytes_to_copy) {
 			sprintf(t, "didn't copy %zu bytes before FSM halted", total_bytes_to_copy - mem_offset);
@@ -413,18 +437,14 @@ int hardware::run_request(server_action &sa) {
 		if (fhdo_err) sa.add_error("gpa-fhdo gradient error; possibly missing samples");
 
 		// readout of any final data remaining at the end
-		unsigned read_tries = 0;
-		[[maybe_unused]] unsigned final_rx_read = 0;
-		// while (read_tries < _halt_tries_limit) {
-		// 	final_rx_read += read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
-		// }
-		while (read_tries < 100) {
-			final_rx_read += read_rx(rx0_i, rx0_q, rx1_i, rx1_q, 100);
-			++read_tries;
-			// TODO why does the RX
+		for (unsigned read_tries = 0; read_tries < 100; read_tries++) {
+			size_t size_before = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
+			read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
+			size_t size_after = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
+			if (size_after != size_before) {
+				read_tries = 0; // reset tries if we got new data
+			}
 		}
-		// delete after debugging is over
-		debug_printf("Final RX read: %d\n", final_rx_read);
 
 		// TODO make sure all the buffers and RX FIFOs are empty
 		unsigned buf_empty = rd32(_buf_empty);
