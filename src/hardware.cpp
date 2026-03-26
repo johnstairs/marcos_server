@@ -209,8 +209,11 @@ int hardware::run_request(server_action &sa) {
 		}
 
 		{
+			// Discard any stale RX samples left from a prior run
+			// (e.g. after abort or client disconnect).  FSM is stopped
+			// so no new data is arriving — a small idle count suffices.
 			std::vector<uint32_t> discard_i, discard_q, discard_i2, discard_q2;
-			drain_rx(discard_i, discard_q, discard_i2, discard_q2);
+			drain_rx(discard_i, discard_q, discard_i2, discard_q2, 3);
 		}
 
 		const size_t total_bytes_to_copy = mpack_node_bin_size(runs);
