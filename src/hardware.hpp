@@ -8,6 +8,13 @@
 #include <inttypes.h> // TODO is this the right include?
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
+#include "mpack/mpack.h"
 
 // Memory-mapped device sizes
 static const unsigned PAGESIZE = sysconf(_SC_PAGESIZE); // should be 4096 (4KiB) on both x86_64 and ARM
@@ -27,9 +34,30 @@ static const unsigned MAR_BUF_ALL_EMPTY = (1 << MAR_BUFS) - 1;
 
 static const unsigned MAR_STATUS_GPA_MASK = 0x00030000;
 
-struct mpack_node_t;
-
 class server_action;
+struct stream_t;
+
+/// @brief Pre-allocated RX data buffer for streaming
+struct rx_chunk {
+	std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;
+	void clear() {
+		rx0_i.clear();
+		rx0_q.clear();
+		rx1_i.clear();
+		rx1_q.clear();
+	}
+
+	size_t largest_vector_size() const {
+		return std::max({rx0_i.size(), rx0_q.size(), rx1_i.size(), rx1_q.size()});
+	}
+
+	void reserve(size_t n) {
+		rx0_i.reserve(n);
+		rx0_q.reserve(n);
+		rx1_i.reserve(n);
+		rx1_q.reserve(n);
+	}
+};
 
 class hardware {
 public:
@@ -75,6 +103,22 @@ private:
 	unsigned read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
 	                 std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
 	                 const unsigned max_reads = 100000);
+
+	/// @brief Drain RX FIFOs until empty, retrying up to
+	/// max_idle_rounds consecutive rounds with no new data.
+	void drain_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
+	              std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
+	              unsigned max_idle_rounds = 100);
+
+	/// @brief Background thread: serializes rx_chunks as msgpack
+	/// messages and writes them to the client socket.
+	static void rx_stream_thread(int fd,
+	                             std::queue<rx_chunk *> &send_queue,
+	                             std::queue<rx_chunk *> &free_pool,
+	                             std::mutex &mtx,
+	                             std::condition_variable &cv,
+	                             std::atomic<bool> &done,
+	                             std::atomic<mpack_error_t> &error);
 
 	// methods to support simulation; most efficient to inline them
 	inline void wr32(volatile uint32_t *addr, uint32_t data);

@@ -208,12 +208,9 @@ int hardware::run_request(server_action &sa) {
 			wr32(_ctrl, 0x2); // set bit 1 to halt
 		}
 
-		for (int tries = 0; tries < 100; tries++) {
-			std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;
-			read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
-			if (!rx0_i.empty() or !rx0_q.empty() or !rx1_i.empty() or !rx1_q.empty()) {
-				tries = 0; // reset tries if we got new data
-			}
+		{
+			std::vector<uint32_t> discard_i, discard_q, discard_i2, discard_q2;
+			drain_rx(discard_i, discard_q, discard_i2, discard_q2);
 		}
 
 		const size_t total_bytes_to_copy = mpack_node_bin_size(runs);
@@ -260,9 +257,46 @@ int hardware::run_request(server_action &sa) {
 		// monitor gradient issues
 		bool ocra1_data_lost = false, ocra1_err = false, fhdo_err = false;
 
-		// RX data
-		std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;
+		// RX data — always accumulated into active_chunk
 		unsigned rx_reads_per_loop = _min_rx_reads_per_loop;
+
+		// RX streaming setup
+		mpack_node_t stream_param = sa.request_param("stream_response");
+		bool rx_streaming = mpack_node_type(stream_param) == mpack_type_bool
+		        && mpack_node_bool(stream_param)
+		        && sa.get_stream() != nullptr;
+
+		const size_t chunk_threshold = 4096; // samples before swapping
+		const size_t rx_chunk_pool_size = rx_streaming ? 4 : 1;
+		std::vector<rx_chunk> rx_chunk_pool_storage(rx_chunk_pool_size);
+		std::queue<rx_chunk *> rx_chunk_send_queue, rx_chunk_free_pool;
+		std::mutex rx_stream_mtx;
+		std::condition_variable rx_stream_cv;
+		std::atomic<bool> rx_stream_done{false};
+		std::atomic<mpack_error_t> rx_stream_error{mpack_ok};
+		std::thread rx_streaming_thread;
+
+		for (size_t i = 0; i < rx_chunk_pool_size; ++i) {
+			rx_chunk_pool_storage[i].reserve(chunk_threshold * 2);
+			rx_chunk_free_pool.push(&rx_chunk_pool_storage[i]);
+		}
+		rx_chunk *active_chunk = rx_chunk_free_pool.front();
+		rx_chunk_free_pool.pop();
+
+		// pool diagnostics
+		size_t pool_low_watermark = rx_chunk_free_pool.size();
+		unsigned pool_empty_count = 0;
+
+		if (rx_streaming) {
+			rx_streaming_thread = std::thread(rx_stream_thread,
+			                                  sa.get_stream()->fd,
+			                                  std::ref(rx_chunk_send_queue),
+			                                  std::ref(rx_chunk_free_pool),
+			                                  std::ref(rx_stream_mtx),
+			                                  std::ref(rx_stream_cv),
+			                                  std::ref(rx_stream_done),
+			                                  std::ref(rx_stream_error));
+		}
 
 		// start the FSM
 		wr32(_ctrl, 0x1);
@@ -351,7 +385,26 @@ int hardware::run_request(server_action &sa) {
 			}
 
 			// Read out RX
-			unsigned rx_locs = read_rx(rx0_i, rx0_q, rx1_i, rx1_q, rx_reads_per_loop);
+			unsigned rx_locs = read_rx(active_chunk->rx0_i, active_chunk->rx0_q,
+			                           active_chunk->rx1_i, active_chunk->rx1_q, rx_reads_per_loop);
+			// Streaming: swap chunk to the send queue when big enough
+			if (rx_streaming && active_chunk->largest_vector_size() >= chunk_threshold) {
+				std::unique_lock<std::mutex> lock(rx_stream_mtx, std::try_to_lock);
+				if (lock.owns_lock() && !rx_chunk_free_pool.empty()) {
+					rx_chunk_send_queue.push(active_chunk);
+					active_chunk = rx_chunk_free_pool.front();
+					rx_chunk_free_pool.pop();
+					size_t free_now = rx_chunk_free_pool.size();
+					if (free_now < pool_low_watermark) {
+						pool_low_watermark = free_now;
+					}
+					lock.unlock();
+					rx_stream_cv.notify_one();
+				} else if (lock.owns_lock()) {
+					++pool_empty_count;
+				}
+				// else: lock contention — keep accumulating
+			}
 			// Simple dynamic FIFO read-out speed governor
 			if (rx_locs > MARGA_RX_FIFO_SPACE - 2 * _max_rx_reads_per_loop) {
 				rx_full = true;
@@ -382,6 +435,14 @@ int hardware::run_request(server_action &sa) {
 
 			if (state == MAR_STATE_HALT) {
 				finished = true;
+			}
+			if (rx_streaming) {
+				mpack_error_t err = rx_stream_error.load();
+				if (err != mpack_ok) {
+					sa.add_error(std::string("RX stream write failed: ")
+					             + mpack_error_to_string(err));
+					break;
+				}
 			}
 			old_pc = pc;
 			++execution_loops;
@@ -437,13 +498,25 @@ int hardware::run_request(server_action &sa) {
 		if (fhdo_err) sa.add_error("gpa-fhdo gradient error; possibly missing samples");
 
 		// readout of any final data remaining at the end
-		for (unsigned read_tries = 0; read_tries < 100; read_tries++) {
-			size_t size_before = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
-			read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
-			size_t size_after = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
-			if (size_after != size_before) {
-				read_tries = 0; // reset tries if we got new data
+		drain_rx(active_chunk->rx0_i, active_chunk->rx0_q,
+		         active_chunk->rx1_i, active_chunk->rx1_q);
+
+		if (rx_streaming) {
+			// Push final chunk if it has data
+			if (active_chunk->largest_vector_size() > 0) {
+				std::lock_guard<std::mutex> lock(rx_stream_mtx);
+				rx_chunk_send_queue.push(active_chunk);
+				active_chunk = nullptr;
+				rx_stream_cv.notify_one();
 			}
+			// Signal thread to finish and wait
+			rx_stream_done.store(true);
+			rx_stream_cv.notify_one();
+			rx_streaming_thread.join();
+
+			sprintf(t, "rx chunk pool: size=%zu, low watermark=%zu, empty count=%u",
+			        rx_chunk_pool_size, pool_low_watermark, pool_empty_count);
+			sa.add_info(t);
 		}
 
 		// TODO make sure all the buffers and RX FIFOs are empty
@@ -469,36 +542,41 @@ int hardware::run_request(server_action &sa) {
 		// halt();
 
 		// encode the RX replies
-		unsigned rx0_elem = rx0_i.size(), rx1_elem = rx1_i.size();
-		if (!rx0_elem and !rx1_elem) {
+		if (rx_streaming) {
+			// Data was already streamed as chunks; reply just confirms success
 			mpack_write(wr, c_ok);
-			sprintf(t, "no RX data received");
-			sa.add_warning(t);
 		} else {
-			mpack_start_map(wr, (rx0_elem ? 2 : 0) + (rx1_elem ? 2 : 0));
-			if (rx0_elem) {
-				mpack_write_cstr(wr, "rx0_i");
-				mpack_start_array(wr, rx0_elem);
-				for (unsigned k = 0; k < rx0_elem; ++k) mpack_write_int(wr, rx0_i[k]);
-				mpack_finish_array(wr);
-				mpack_write_cstr(wr, "rx0_q");
-				mpack_start_array(wr, rx0_elem);
-				for (unsigned k = 0; k < rx0_elem; ++k) mpack_write_int(wr, rx0_q[k]);
-				mpack_finish_array(wr);
-			}
+			unsigned rx0_elem = active_chunk->rx0_i.size(), rx1_elem = active_chunk->rx1_i.size();
+			if (!rx0_elem and !rx1_elem) {
+				mpack_write(wr, c_ok);
+				sprintf(t, "no RX data received");
+				sa.add_warning(t);
+			} else {
+				mpack_start_map(wr, (rx0_elem ? 2 : 0) + (rx1_elem ? 2 : 0));
+				if (rx0_elem) {
+					mpack_write_cstr(wr, "rx0_i");
+					mpack_start_array(wr, rx0_elem);
+					for (unsigned k = 0; k < rx0_elem; ++k) mpack_write_int(wr, active_chunk->rx0_i[k]);
+					mpack_finish_array(wr);
+					mpack_write_cstr(wr, "rx0_q");
+					mpack_start_array(wr, rx0_elem);
+					for (unsigned k = 0; k < rx0_elem; ++k) mpack_write_int(wr, active_chunk->rx0_q[k]);
+					mpack_finish_array(wr);
+				}
 
-			if (rx1_elem) {
-				mpack_write_cstr(wr, "rx1_i");
-				mpack_start_array(wr, rx1_elem);
-				for (unsigned k = 0; k < rx1_elem; ++k) mpack_write_int(wr, rx1_i[k]);
-				mpack_finish_array(wr);
-				mpack_write_cstr(wr, "rx1_q");
-				mpack_start_array(wr, rx1_elem);
-				for (unsigned k = 0; k < rx1_elem; ++k) mpack_write_int(wr, rx1_q[k]);
-				mpack_finish_array(wr);
-			}
+				if (rx1_elem) {
+					mpack_write_cstr(wr, "rx1_i");
+					mpack_start_array(wr, rx1_elem);
+					for (unsigned k = 0; k < rx1_elem; ++k) mpack_write_int(wr, active_chunk->rx1_i[k]);
+					mpack_finish_array(wr);
+					mpack_write_cstr(wr, "rx1_q");
+					mpack_start_array(wr, rx1_elem);
+					for (unsigned k = 0; k < rx1_elem; ++k) mpack_write_int(wr, active_chunk->rx1_q[k]);
+					mpack_finish_array(wr);
+				}
 
-			mpack_finish_map(wr);
+				mpack_finish_map(wr);
+			}
 		}
 	}
 
@@ -743,6 +821,18 @@ unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &
 	else return fifo1_locs;
 }
 
+void hardware::drain_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
+                        std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
+                        unsigned max_idle_rounds) {
+	for (unsigned idle = 0; idle < max_idle_rounds; ++idle) {
+		size_t before = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
+		read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
+		if (rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size() != before) {
+			idle = 0; // reset if we got new data
+		}
+	}
+}
+
 void hardware::wr32(volatile uint32_t *addr, uint32_t data) {
 #ifdef VERILATOR_BUILD
 	if (addr >= _mar_base && addr < _mar_base + MARGA_SIZE) {
@@ -823,4 +913,79 @@ size_t hardware::hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffe
 #else
 	return mpack_node_copy_data(node, (char *)buffer, bufsize); // discard volatile qualifier
 #endif
+}
+
+/// Each chunk is: [marcos_rx_chunk(3), chunk_index, rx0_i[], rx0_q[], rx1_i[], rx1_q[]]
+void hardware::rx_stream_thread(int fd,
+                                std::queue<rx_chunk *> &send_queue,
+                                std::queue<rx_chunk *> &free_pool,
+                                std::mutex &mtx,
+                                std::condition_variable &cv,
+                                std::atomic<bool> &done,
+                                std::atomic<mpack_error_t> &error) {
+	const size_t buf_size = 1024 * 1024; // 1MB serialization buffer
+	std::vector<char> buf(buf_size);
+	uint32_t chunk_index = 0;
+
+	mpack_writer_t w;
+	mpack_writer_init(&w, buf.data(), buf_size);
+	stream_t stream = {fd};
+	mpack_writer_set_context(&w, &stream);
+	mpack_writer_set_flush(&w, &write_stream);
+
+	auto write_vec = [&](const std::vector<uint32_t> &v) {
+		mpack_start_array(&w, v.size());
+		for (auto val: v) mpack_write_int(&w, val);
+		mpack_finish_array(&w);
+	};
+
+	while (true) {
+		rx_chunk *chunk = nullptr;
+		{
+			std::unique_lock<std::mutex> lock(mtx);
+			cv.wait(lock, [&] { return !send_queue.empty() || done.load(); });
+			if (send_queue.empty() && done.load()) {
+				break;
+			}
+			chunk = send_queue.front();
+			send_queue.pop();
+		}
+
+		mpack_start_array(&w, 3);
+		mpack_write_u32(&w, marcos_rx_chunk);
+		mpack_write_u32(&w, chunk_index++);
+
+		unsigned rx0_elem = chunk->rx0_i.size(), rx1_elem = chunk->rx1_i.size();
+		mpack_start_map(&w, (rx0_elem ? 2 : 0) + (rx1_elem ? 2 : 0));
+		if (rx0_elem) {
+			mpack_write_cstr(&w, "rx0_i");
+			write_vec(chunk->rx0_i);
+			mpack_write_cstr(&w, "rx0_q");
+			write_vec(chunk->rx0_q);
+		}
+		if (rx1_elem) {
+			mpack_write_cstr(&w, "rx1_i");
+			write_vec(chunk->rx1_i);
+			mpack_write_cstr(&w, "rx1_q");
+			write_vec(chunk->rx1_q);
+		}
+		mpack_finish_map(&w);
+
+		mpack_finish_array(&w);
+		mpack_writer_flush_message(&w);
+
+		if (mpack_writer_error(&w) != mpack_ok) {
+			error.store(mpack_writer_error(&w));
+			break;
+		}
+
+		// Return chunk to free pool
+		chunk->clear();
+		{
+			std::lock_guard<std::mutex> lock(mtx);
+			free_pool.push(chunk);
+		}
+	}
+
+	mpack_writer_destroy(&w);
 }

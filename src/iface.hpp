@@ -49,6 +49,7 @@ enum marcos_packet {
 	marcos_request = 0,
 	marcos_emergency_stop = 1,
 	marcos_close_server = 2,
+	marcos_rx_chunk = 3,
 	marcos_reply = 128,
 	marcos_reply_error = 129
 };
@@ -87,7 +88,7 @@ struct mpack_error: public std::runtime_error {
 class server_action {
 public:
 	/// @brief Interpret the incoming request and start preparing the reply in advance
-	server_action(mpack_node_t request_root, mpack_writer_t *writer); // TODO: add hardware object
+	server_action(mpack_node_t request_root, mpack_writer_t *writer, stream_t *stream = nullptr);
 	~server_action();
 	/// @brief Wrapper to provide mpack nodes to the hardware. The
 	/// nodes should be the command argument (usually maps); see
@@ -109,13 +110,20 @@ public:
 	void add_error(std::string s);
 	void add_warning(std::string s);
 	void add_info(std::string s);
+	/// @brief Look up a request parameter by key; returns raw node (missing node if absent)
+	mpack_node_t request_param(const char *key) const;
+	/// @brief Get the stream for direct socket writes (e.g. RX chunk streaming)
+	stream_t *get_stream() { return _stream; }
 	/// @brief True if the reader tree has had any errors
 	bool reader_err();
 private:
 	/// @brief Short for request data; payload containing request data from client specifying what it wants the server to do
 	mpack_node_t _rd;
 	mpack_writer_t *_wr;
+	stream_t *_stream;
 	unsigned _request_type, _reply_index, _request_version;
+	mpack_node_t _request_params;
+	bool _has_params;
 	std::vector<std::string> _errors, _warnings, _infos;
 
 	/// @brief Encode the vectors of strings containing messages

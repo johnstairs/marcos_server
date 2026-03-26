@@ -28,14 +28,17 @@ void write_stream(mpack_writer_t *writer, const char *buffer, size_t count) {
 	//	return amount;
 }
 
-server_action::server_action(mpack_node_t request_root, mpack_writer_t *writer) :
-    // server_action::server_action(mpack_node_t request_root, char *reply_buffer):
-    //	_reply_buffer(reply_buffer)
-    _wr(writer) {
+server_action::server_action(mpack_node_t request_root, mpack_writer_t *writer, stream_t *stream) :
+    _wr(writer),
+    _stream(stream) {
 	auto r = request_root;
 	_request_type = mpack_node_uint(mpack_node_array_at(r, 0));
 	_reply_index = mpack_node_uint(mpack_node_array_at(r, 1));
 	_request_version = mpack_node_uint(mpack_node_array_at(r, 3));
+
+	// Field 2: optional params dict (may be 0/nil for backward compat)
+	_request_params = mpack_node_array_at(r, 2);
+	_has_params = (mpack_node_type(_request_params) == mpack_type_map);
 
 	_rd = mpack_node_array_at(r, 4);
 	check_version();
@@ -154,6 +157,14 @@ void server_action::add_error(std::string s) { _errors.push_back(s); }
 void server_action::add_warning(std::string s) { _warnings.push_back(s); }
 void server_action::add_info(std::string s) { _infos.push_back(s); }
 
+mpack_node_t server_action::request_param(const char *key) const {
+	if (!_has_params) {
+		return mpack_tree_missing_node(_request_params.tree);
+	}
+
+	return mpack_node_map_cstr_optional(_request_params, key);
+}
+
 void server_action::check_version() {
 	char client_version_major = (_request_version & 0xff0000) >> 16;
 	char client_version_minor = (_request_version & 0xff00) >> 8;
@@ -254,7 +265,7 @@ void iface::run_stream() {
 
 			// Reply: use a constant buffer
 			try {
-				server_action sa(mpack_tree_root(&tree), &writer);
+				server_action sa(mpack_tree_root(&tree), &writer, &_stream_fd);
 				int sa_status = sa.process_request(); // run hardware operations or whatever else is needed
 				if (sa_status != 0) _run_iface = false; // shut down server gracefully
 				sa.finish_reply();
