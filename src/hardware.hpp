@@ -123,7 +123,7 @@ private:
 	// methods to support simulation; most efficient to inline them
 	inline void wr32(volatile uint32_t *addr, uint32_t data);
 	inline uint32_t rd32(volatile uint32_t *addr);
-	void *hw_memcpy(volatile void *s1, const void *s2, size_t n);
+	volatile void *hw_memcpy(volatile void *s1, const void *s2, size_t n);
 	size_t hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffer, size_t bufsize);
 };
 

@@ -377,8 +377,8 @@ int hardware::run_request(server_action &sa) {
 					mem_offset += second_bytes;
 				} else { // no wrapping
 					debug_printf("hw_memcpy: %zu, %zu, %u\n", local_mem_offset, mem_offset, bytes_to_copy);
-					[[maybe_unused]] auto k = (char *)hw_memcpy(_mar_mem + local_mem_offset,
-					                                            rundata + mem_offset, bytes_to_copy);
+					[[maybe_unused]] auto k = (volatile char *)hw_memcpy(_mar_mem + local_mem_offset,
+					                                                     rundata + mem_offset, bytes_to_copy);
 					debug_printf("bytes copied: %zu\n", k - _mar_mem - local_mem_offset);
 					mem_offset += bytes_to_copy;
 				}
@@ -867,18 +867,9 @@ uint32_t hardware::rd32(volatile uint32_t *addr) {
 #endif
 }
 
-void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
+volatile void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
 	assert(n % 4 == 0 && "hw_memcpy: size must be a multiple of 4 (FPGA word size)");
-#ifdef VERILATOR_BUILD
-	// copy the data via individual 32b bus writes
-	auto *s1u = reinterpret_cast<volatile uint32_t *>(s1);
-	auto *s2u = reinterpret_cast<const volatile uint32_t *>(s2);
-	size_t nu = n / 4;
 
-	// algorithm copied verbatim from mpack, just acting on uint32
-	while (nu-- != 0) wr32(s1u++, *s2u++);
-	return (void *)s1u;
-#else
 	// Use individual 32-bit volatile writes rather than memcpy.
 	// At high optimisation levels, memcpy can be lowered to wide
 	// (e.g. NEON) stores whose AXI bus transactions silently
@@ -887,32 +878,18 @@ void *hardware::hw_memcpy(volatile void *s1, const void *s2, size_t n) {
 	auto *s = reinterpret_cast<const uint32_t *>(s2);
 	size_t nu = n / 4;
 	while (nu-- != 0) {
-		*d++ = *s++;
+		wr32(d++, *s++);
 	}
-	return (void *)d;
-#endif
+	return d;
 }
 
 size_t hardware::hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffer, size_t bufsize) {
-#ifdef VERILATOR_BUILD
-	// Copy the data via individual 32b bus writes
-	char *tmp = reinterpret_cast<char *>(malloc(bufsize));
-	size_t bytes_copied = mpack_node_copy_data(node, tmp, bufsize);
-
-	// Inefficient, but won't be a major delay in the simulation anyway
-	// TODO: check pointer arithmetic!
-	auto tmp_u32 = reinterpret_cast<uint32_t *>(tmp);
-	size_t offset = 0;
-	for (size_t k = 0; k < bytes_copied / 4; ++k) {
-		wr32(reinterpret_cast<volatile uint32_t *>(buffer + offset), tmp_u32[k]);
-		offset += 4;
-	}
-
-	free(tmp);
+	// Copy via a temporary buffer + individual 32-bit volatile writes,
+	// to avoid wide stores that corrupt FPGA BRAM (same issue as hw_memcpy).
+	std::vector<char> tmp(bufsize);
+	size_t bytes_copied = mpack_node_copy_data(node, tmp.data(), bufsize);
+	hw_memcpy(buffer, tmp.data(), bytes_copied);
 	return bytes_copied;
-#else
-	return mpack_node_copy_data(node, (char *)buffer, bufsize); // discard volatile qualifier
-#endif
 }
 
 /// Each chunk is: [marcos_rx_chunk(3), chunk_index, rx0_i[], rx0_q[], rx1_i[], rx1_q[]]
