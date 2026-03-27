@@ -729,16 +729,41 @@ void hardware::init_mem() {
 }
 
 void hardware::halt() {
-	// Halt any currently-running sequence by halting FSM
-	wr32(_ctrl, 0x2); // set bit 1 to halt
+	// Assert halt (stop_fsm = bit 1).  Keep run_fsm (bit 0) clear so
+	// that HALT state will transition to IDLE once we get there.
+	wr32(_ctrl, 0x2);
 
-	// turn off readout
+	// Wait for the FSM to reach HALT.  States like COUNTDOWN, TRIG
+	// and RUN don't check stop_fsm, so we must wait for them to
+	// finish naturally until the FSM re-enters PREPARE, which is
+	// the only state that checks stop_fsm and transitions to HALT.
+	unsigned k = 0;
+	while (k < _halt_tries_limit) {
+		uint32_t state = rd32(_exec) >> 24;
+		if (state == MAR_STATE_HALT || state == MAR_STATE_IDLE) break;
+		++k;
+	}
+
+	// Now release halt so the FSM transitions HALT → IDLE.
+	// The HDL only processes direct buffer writes in IDLE.
+	wr32(_ctrl, 0x0);
+
+	// Wait for IDLE
+	while (k < _halt_tries_limit) {
+		if ((rd32(_exec) >> 24) == MAR_STATE_IDLE) break;
+		++k;
+	}
+	if ((rd32(_exec) >> 24) != MAR_STATE_IDLE) {
+		fprintf(stderr, "halt: FSM did not reach IDLE after %u tries (state=0x%02x)\n",
+		        k, rd32(_exec) >> 24);
+	}
+
+	// Now in IDLE: turn off readout via direct write to buffer 16
 	unsigned buf = 16; // buffer 16 = RX ctrl buffer index
 	unsigned val = 0x0000; // halt the RX
 	wr32(_direct, (buf << 24) | (val & 0xffff));
 
 	// Wait a while for all the output buffers to empty
-	unsigned k = 0;
 	while (k < _halt_tries_limit) {
 		if (rd32(_buf_empty) == MAR_BUF_ALL_EMPTY) break;
 		++k;
@@ -746,11 +771,6 @@ void hardware::halt() {
 
 	// Empty RX FIFOs (do this last)
 	discard_rx();
-
-	while ((rd32(_exec) >> 24 == MAR_STATE_COUNTDOWN) && k < _halt_tries_limit) {
-		++k;
-	}
-	wr32(_ctrl, 0x0); // set FSM to idle (not explicitly halted)
 }
 
 void hardware::halt_and_reset() {
@@ -822,9 +842,8 @@ unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &
 
 void hardware::discard_rx() {
 	// RX chain should already be stopped (halt() disables RX enable
-	// and resets the CIC via buffer 16).  Loop until the FIFOs are
-	// empty to handle any samples still in flight from the CIC
-	// pipeline when the snapshot was taken.
+	// and resets the CIC via buffer 16).  Drain any remaining
+	// samples from the FIFOs.
 	uint32_t rxlocs;
 	while ((rxlocs = rd32(_rx_locs)) != 0) {
 		int fifo0_locs = rxlocs & 0xffff, fifo1_locs = rxlocs >> 16;
