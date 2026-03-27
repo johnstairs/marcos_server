@@ -222,6 +222,8 @@ void iface::init(unsigned port) {
 		perror("listen failed");
 		exit(EXIT_FAILURE);
 	}
+
+	fprintf(stderr, "Listening on %s:%u\n", inet_ntoa(_address.sin_addr), port);
 }
 
 void iface::run_stream() {
