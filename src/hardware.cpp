@@ -203,18 +203,13 @@ int hardware::run_request(server_action &sa) {
 		if ((exec >> 24) != MAR_STATE_IDLE) {
 			sprintf(t, "mar FSM was not idle when the run began");
 			sa.add_warning(t);
-
-			// halt FSM
-			wr32(_ctrl, 0x2); // set bit 1 to halt
+			halt();
 		}
 
-		{
-			// Discard any stale RX samples left from a prior run
-			// (e.g. after abort or client disconnect).  FSM is stopped
-			// so no new data is arriving — a small idle count suffices.
-			std::vector<uint32_t> discard_i, discard_q, discard_i2, discard_q2;
-			drain_rx(discard_i, discard_q, discard_i2, discard_q2, 3);
-		}
+		// Discard any stale RX samples left from a prior run
+		// (e.g. after abort or client disconnect).  FSM is stopped
+		// so no new data is arriving — a small idle count suffices.
+		discard_rx();
 
 		const size_t total_bytes_to_copy = mpack_node_bin_size(runs);
 		debug_printf("total bytes to copy: %zu\n", total_bytes_to_copy);
@@ -500,9 +495,13 @@ int hardware::run_request(server_action &sa) {
 		if (ocra1_err) sa.add_error("ocra1 gradient error; possibly missing samples");
 		if (fhdo_err) sa.add_error("gpa-fhdo gradient error; possibly missing samples");
 
-		// readout of any final data remaining at the end
-		drain_rx(active_chunk->rx0_i, active_chunk->rx0_q,
-		         active_chunk->rx1_i, active_chunk->rx1_q);
+		// Wait for any in-flight CIC pipeline samples to reach the
+		// FIFOs, then read them out.  The CIC drain time is bounded
+		// by decimation_rate * cic_stages / clock_freq; 2 ms is
+		// conservative for all practical configurations.
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		while (read_rx(active_chunk->rx0_i, active_chunk->rx0_q,
+		               active_chunk->rx1_i, active_chunk->rx1_q)) {}
 
 		if (rx_streaming) {
 			// Push final chunk if it has data
@@ -746,10 +745,7 @@ void hardware::halt() {
 	}
 
 	// Empty RX FIFOs (do this last)
-	if (rd32(_rx_locs)) { // nonzero number of elements in FIFOs
-		std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q; // throw away these vectors
-		read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
-	}
+	discard_rx();
 
 	while ((rd32(_exec) >> 24 == MAR_STATE_COUNTDOWN) && k < _halt_tries_limit) {
 		++k;
@@ -824,14 +820,25 @@ unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &
 	else return fifo1_locs;
 }
 
-void hardware::drain_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
-                        std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
-                        unsigned max_idle_rounds) {
-	for (unsigned idle = 0; idle < max_idle_rounds; ++idle) {
-		size_t before = rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size();
-		read_rx(rx0_i, rx0_q, rx1_i, rx1_q);
-		if (rx0_i.size() + rx0_q.size() + rx1_i.size() + rx1_q.size() != before) {
-			idle = 0; // reset if we got new data
+void hardware::discard_rx() {
+	// RX chain should already be stopped (halt() disables RX enable
+	// and resets the CIC via buffer 16).  Loop until the FIFOs are
+	// empty to handle any samples still in flight from the CIC
+	// pipeline when the snapshot was taken.
+	uint32_t rxlocs;
+	while ((rxlocs = rd32(_rx_locs)) != 0) {
+		int fifo0_locs = rxlocs & 0xffff, fifo1_locs = rxlocs >> 16;
+		while (fifo0_locs > 0 || fifo1_locs > 0) {
+			if (fifo0_locs > 0) {
+				rd32(_rx0_q_data);
+				rd32(_rx0_i_data);
+				--fifo0_locs;
+			}
+			if (fifo1_locs > 0) {
+				rd32(_rx1_q_data);
+				rd32(_rx1_i_data);
+				--fifo1_locs;
+			}
 		}
 	}
 }

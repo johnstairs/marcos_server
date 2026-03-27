@@ -104,11 +104,9 @@ private:
 	                 std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
 	                 const unsigned max_reads = 100000);
 
-	/// @brief Drain RX FIFOs until empty, retrying up to
-	/// max_idle_rounds consecutive rounds with no new data.
-	void drain_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
-	              std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
-	              unsigned max_idle_rounds = 100);
+	/// @brief Discard all samples currently in the RX FIFOs.
+	/// The RX chain must already be stopped (e.g. via halt()).
+	void discard_rx();
 
 	/// @brief Background thread: serializes rx_chunks as msgpack
 	/// messages and writes them to the client socket.

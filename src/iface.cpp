@@ -2,7 +2,6 @@
 #include "version.hpp"
 #include "iface.hpp"
 #include "hardware.hpp"
-#include <cerrno>
 #include <sstream>
 #include <iostream>
 #include <cassert>
@@ -17,58 +16,16 @@ std::string version_str(unsigned ver) {
 
 size_t read_stream(mpack_tree_t *tree, char *buffer, size_t count) {
 	stream_t *stream = (stream_t *)mpack_tree_context(tree);
-
-	while (true) {
-		ssize_t step = read(stream->fd, buffer, count);
-
-		if (step > 0) {
-			return static_cast<size_t>(step);
-		}
-
-		if (step < 0 && errno == EINTR) {
-			continue;
-		}
-
-		mpack_tree_flag_error(tree, mpack_error_io);
-		return 0;
-	}
+	ssize_t step = read(stream->fd, buffer, count);
+	if (step <= 0) mpack_tree_flag_error(tree, mpack_error_io);
+	return step;
 }
 
 void write_stream(mpack_writer_t *writer, const char *buffer, size_t count) {
 	stream_t *stream = (stream_t *)mpack_writer_context(writer);
-	// Walk the caller's buffer forward until every byte has been written
-	// to the socket or send() reports an unrecoverable failure.
-	const char *cursor = buffer;
-	// Track how much data is still pending because send() is allowed to
-	// complete a partial write even on a blocking TCP socket.
-	size_t remaining = count;
-
-	while (remaining > 0) {
-		// Suppress SIGPIPE for this send() call so a client
-		// disconnect is reported as an error return (typically EPIPE)
-		// instead of terminating the whole server process.
-		ssize_t sent = send(stream->fd, cursor, remaining, MSG_NOSIGNAL);
-
-		if (sent > 0) {
-			// Advance past the bytes the kernel accepted and keep going until
-			// the whole message has been flushed.
-			cursor += sent;
-			remaining -= static_cast<size_t>(sent);
-			continue;
-		}
-
-		if (sent < 0 && errno == EINTR) {
-			// A signal interrupted the syscall before it completed. Retry the
-			// exact same send instead of treating it as a broken connection.
-			continue;
-		}
-
-		// Any other result means the socket can no longer accept this write.
-		// MPack expects flush callbacks to mark the writer failed rather than
-		// throw, so convert the socket failure into an I/O error here.
-		mpack_writer_flag_error(writer, mpack_error_io);
-		return;
-	}
+	ssize_t amount = write(stream->fd, buffer, count);
+	if (amount <= 0) mpack_writer_flag_error(writer, mpack_error_io);
+	//	return amount;
 }
 
 server_action::server_action(mpack_node_t request_root, mpack_writer_t *writer, stream_t *stream) :
