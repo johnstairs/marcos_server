@@ -41,22 +41,23 @@ struct mpack_tree_t;
 struct mpack_node_t;
 
 /// @brief stream read and write functions
-size_t read_stream(mpack_tree_t* tree, char* buffer, size_t count);
-void write_stream(mpack_writer_t* writer, const char* buffer, size_t count);
+size_t read_stream(mpack_tree_t *tree, char *buffer, size_t count);
+void write_stream(mpack_writer_t *writer, const char *buffer, size_t count);
 
 /// @brief MaRCoS msgpack packet types
 enum marcos_packet {
-	marcos_request=0,
-	marcos_emergency_stop=1,
-	marcos_close_server=2,
-	marcos_reply=128,
-	marcos_reply_error=129
+	marcos_request = 0,
+	marcos_emergency_stop = 1,
+	marcos_close_server = 2,
+	marcos_rx_chunk = 3,
+	marcos_reply = 128,
+	marcos_reply_error = 129
 };
 
 enum command_return {
-	c_ok=0,
-	c_err=-1,
-	c_warn=-2
+	c_ok = 0,
+	c_err = -1,
+	c_warn = -2
 };
 
 /// @brief Various kinds of MaRCoS-specifc errors
@@ -87,7 +88,7 @@ struct mpack_error: public std::runtime_error {
 class server_action {
 public:
 	/// @brief Interpret the incoming request and start preparing the reply in advance
-	server_action(mpack_node_t request_root, mpack_writer_t* writer); // TODO: add hardware object
+	server_action(mpack_node_t request_root, mpack_writer_t *writer, stream_t *stream = nullptr);
 	~server_action();
 	/// @brief Wrapper to provide mpack nodes to the hardware. The
 	/// nodes should be the command argument (usually maps); see
@@ -95,11 +96,11 @@ public:
 	/// for more information. command_present returns 1 if the
 	/// command was found, 0 otherwise; -1 if there was an mpack
 	/// error.
-	mpack_node_t get_command_and_start_reply(const char* cstr, int &command_present);
+	mpack_node_t get_command_and_start_reply(const char *cstr, int &command_present);
 	/// @brief Return the number of commands requested by the client; negative if there's an error (TODO)
 	size_t command_count();
 	/// @brief Getter for the writer object
-	mpack_writer_t* get_writer() {return _wr;}
+	mpack_writer_t *get_writer() { return _wr; }
 	/// @brief Run the request on the hardware, returning a basic error status
 	int process_request();
 	/// @brief Finish filling the buffer to reply: include the status messages and anything else left over. Return: TODO
@@ -109,13 +110,20 @@ public:
 	void add_error(std::string s);
 	void add_warning(std::string s);
 	void add_info(std::string s);
+	/// @brief Look up a request parameter by key; returns raw node (missing node if absent)
+	mpack_node_t request_param(const char *key) const;
+	/// @brief Get the stream for direct socket writes (e.g. RX chunk streaming)
+	stream_t *get_stream() { return _stream; }
 	/// @brief True if the reader tree has had any errors
 	bool reader_err();
 private:
 	/// @brief Short for request data; payload containing request data from client specifying what it wants the server to do
 	mpack_node_t _rd;
-	mpack_writer_t* _wr;
+	mpack_writer_t *_wr;
+	stream_t *_stream;
 	unsigned _request_type, _reply_index, _request_version;
+	mpack_node_t _request_params;
+	bool _has_params;
 	std::vector<std::string> _errors, _warnings, _infos;
 
 	/// @brief Encode the vectors of strings containing messages
@@ -135,10 +143,10 @@ private:
 ///@brief Interface manager class, encapsulating the interface logic
 class iface {
 public:
-	iface(unsigned port=11111);
+	iface(unsigned port = 11111);
 
 	/// @brief Set up socket
-	void init(unsigned port=11111);
+	void init(unsigned port = 11111);
 	/// @brief Run request-response loop
 	void run_stream(); // main
 	/// @brief Unpack and act on each received packet, calling

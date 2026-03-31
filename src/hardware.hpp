@@ -8,28 +8,56 @@
 #include <inttypes.h> // TODO is this the right include?
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
+#include "mpack/mpack.h"
 
 // Memory-mapped device sizes
 static const unsigned PAGESIZE = sysconf(_SC_PAGESIZE); // should be 4096 (4KiB) on both x86_64 and ARM
 static const unsigned SLCR_SIZE = PAGESIZE,
-	MARGA_SIZE = 128*PAGESIZE,
-	MARGA_MEM_SIZE = 64*PAGESIZE;
+                      MARGA_SIZE = 128 * PAGESIZE,
+                      MARGA_MEM_SIZE = 64 * PAGESIZE;
 static const unsigned MARGA_MEM_MASK = 0x3ffff;
 static const unsigned MARGA_RX_FIFO_SPACE = 16384;
 
 // marga internal states
 static const unsigned MAR_STATE_IDLE = 0, MAR_STATE_PREPARE = 1, MAR_STATE_RUN = 2,
-	MAR_STATE_COUNTDOWN = 3, MAR_STATE_TRIG = 4, MAR_STATE_TRIG_FOREVER = 5,
-	MAR_STATE_HALT = 8;
+                      MAR_STATE_COUNTDOWN = 3, MAR_STATE_TRIG = 4, MAR_STATE_TRIG_FOREVER = 5,
+                      MAR_STATE_HALT = 8;
 
 static const unsigned MAR_BUFS = 24;
 static const unsigned MAR_BUF_ALL_EMPTY = (1 << MAR_BUFS) - 1;
 
 static const unsigned MAR_STATUS_GPA_MASK = 0x00030000;
 
-struct mpack_node_t;
-
 class server_action;
+struct stream_t;
+
+/// @brief Pre-allocated RX data buffer for streaming
+struct rx_chunk {
+	std::vector<uint32_t> rx0_i, rx0_q, rx1_i, rx1_q;
+	void clear() {
+		rx0_i.clear();
+		rx0_q.clear();
+		rx1_i.clear();
+		rx1_q.clear();
+	}
+
+	size_t largest_vector_size() const {
+		return std::max({rx0_i.size(), rx0_q.size(), rx1_i.size(), rx1_q.size()});
+	}
+
+	void reserve(size_t n) {
+		rx0_i.reserve(n);
+		rx0_q.reserve(n);
+		rx1_i.reserve(n);
+		rx1_q.reserve(n);
+	}
+};
 
 class hardware {
 public:
@@ -38,9 +66,9 @@ public:
 
 	int run_request(server_action &sa);
 
-        /// @brief Set up shared memory, control registers etc; these
-        /// aspects are not client-configurable. If compiled on x86,
-        /// just mimics the shared memory.
+	/// @brief Set up shared memory, control registers etc; these
+	/// aspects are not client-configurable. If compiled on x86,
+	/// just mimics the shared memory.
 	void init_mem();
 
 	/// @brief Halt the FSM, interrupting any ongoing sequence and/or readout in progress
@@ -60,8 +88,8 @@ private:
 
 	// Peripheral register addresses in PL
 	volatile uint32_t *_slcr, *_mar_base, *_ctrl, *_direct, *_exec, *_status,
-		*_status_latch, *_buf_err, *_buf_full, *_buf_empty, *_rx_locs,
-		*_rx0_i_data, *_rx1_i_data, *_rx0_q_data, *_rx1_q_data;
+	        *_status_latch, *_buf_err, *_buf_full, *_buf_empty, *_rx_locs,
+	        *_rx0_i_data, *_rx1_i_data, *_rx0_q_data, *_rx1_q_data;
 
 	volatile char *_mar_mem;
 
@@ -76,10 +104,24 @@ private:
 	                 std::vector<uint32_t> &rx1_i, std::vector<uint32_t> &rx1_q,
 	                 const unsigned max_reads = 100000);
 
+	/// @brief Discard all samples currently in the RX FIFOs.
+	/// The RX chain must already be stopped (e.g. via halt()).
+	void discard_rx();
+
+	/// @brief Background thread: serializes rx_chunks as msgpack
+	/// messages and writes them to the client socket.
+	static void rx_stream_thread(int fd,
+	                             std::queue<rx_chunk *> &send_queue,
+	                             std::queue<rx_chunk *> &free_pool,
+	                             std::mutex &mtx,
+	                             std::condition_variable &cv,
+	                             std::atomic<bool> &done,
+	                             std::atomic<mpack_error_t> &error);
+
 	// methods to support simulation; most efficient to inline them
 	inline void wr32(volatile uint32_t *addr, uint32_t data);
 	inline uint32_t rd32(volatile uint32_t *addr);
-	void* hw_memcpy(volatile void *s1, const void *s2, size_t n);
+	volatile void *hw_memcpy(volatile void *s1, const void *s2, size_t n);
 	size_t hw_mpack_node_copy_data(mpack_node_t node, volatile char *buffer, size_t bufsize);
 };
 

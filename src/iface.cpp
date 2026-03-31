@@ -14,29 +14,73 @@ std::string version_str(unsigned ver) {
 	return v.str();
 }
 
-size_t read_stream(mpack_tree_t* tree, char* buffer, size_t count) {
-	stream_t* stream = (stream_t *)mpack_tree_context(tree);
-	ssize_t step = read(stream->fd, buffer, count);
-	if (step <= 0) mpack_tree_flag_error(tree, mpack_error_io);
-	return step;
+size_t read_stream(mpack_tree_t *tree, char *buffer, size_t count) {
+	stream_t *stream = (stream_t *)mpack_tree_context(tree);
+
+	while (true) {
+		ssize_t step = read(stream->fd, buffer, count);
+
+		if (step > 0) {
+			return static_cast<size_t>(step);
+		}
+
+		if (step < 0 && errno == EINTR) {
+			continue;
+		}
+
+		mpack_tree_flag_error(tree, mpack_error_io);
+		return 0;
+	}
 }
 
-void write_stream(mpack_writer_t* writer, const char* buffer, size_t count) {
-	stream_t* stream = (stream_t *)mpack_writer_context(writer);
-	ssize_t amount = write(stream->fd, buffer, count);
-	if (amount <= 0) mpack_writer_flag_error(writer, mpack_error_io);
-//	return amount;
+void write_stream(mpack_writer_t *writer, const char *buffer, size_t count) {
+	stream_t *stream = (stream_t *)mpack_writer_context(writer);
+	// Walk the caller's buffer forward until every byte has been written
+	// to the socket or send() reports an unrecoverable failure.
+	const char *cursor = buffer;
+	// Track how much data is still pending because send() is allowed to
+	// complete a partial write even on a blocking TCP socket.
+	size_t remaining = count;
+
+	while (remaining > 0) {
+		// Suppress SIGPIPE for this send() call so a client
+		// disconnect is reported as an error return (typically EPIPE)
+		// instead of terminating the whole server process.
+		ssize_t sent = send(stream->fd, cursor, remaining, MSG_NOSIGNAL);
+
+		if (sent > 0) {
+			// Advance past the bytes the kernel accepted and keep going until
+			// the whole message has been flushed.
+			cursor += sent;
+			remaining -= static_cast<size_t>(sent);
+			continue;
+		}
+
+		if (sent < 0 && errno == EINTR) {
+			// A signal interrupted the syscall before it completed. Retry the
+			// exact same send instead of treating it as a broken connection.
+			continue;
+		}
+
+		// Any other result means the socket can no longer accept this write.
+		// MPack expects flush callbacks to mark the writer failed rather than
+		// throw, so convert the socket failure into an I/O error here.
+		mpack_writer_flag_error(writer, mpack_error_io);
+		return;
+	}
 }
 
-server_action::server_action(mpack_node_t request_root, mpack_writer_t* writer):
-// server_action::server_action(mpack_node_t request_root, char *reply_buffer):
-//	_reply_buffer(reply_buffer)
-	_wr(writer)
-{
+server_action::server_action(mpack_node_t request_root, mpack_writer_t *writer, stream_t *stream) :
+    _wr(writer),
+    _stream(stream) {
 	auto r = request_root;
 	_request_type = mpack_node_uint(mpack_node_array_at(r, 0));
 	_reply_index = mpack_node_uint(mpack_node_array_at(r, 1));
 	_request_version = mpack_node_uint(mpack_node_array_at(r, 3));
+
+	// Field 2: optional params dict (may be 0/nil for backward compat)
+	_request_params = mpack_node_array_at(r, 2);
+	_has_params = (mpack_node_type(_request_params) == mpack_type_map);
 
 	_rd = mpack_node_array_at(r, 4);
 	check_version();
@@ -45,7 +89,7 @@ server_action::server_action(mpack_node_t request_root, mpack_writer_t* writer):
 	mpack_start_array(_wr, 6);
 
 	if (_request_type == marcos_emergency_stop) mpack_write_u32(_wr, marcos_reply_error);
-//	else if (_request_type == marcos_close_server) mpack_write_u32(_wr,
+	//	else if (_request_type == marcos_close_server) mpack_write_u32(_wr,
 	else mpack_write_u32(_wr, marcos_reply);
 
 	mpack_write_u32(_wr, _reply_index + 1); // reply index for the client to keep track
@@ -64,7 +108,7 @@ size_t server_action::command_count() {
 	return mpack_node_map_count(_rd);
 }
 
-mpack_node_t server_action::get_command_and_start_reply(const char* cstr, int &status) {
+mpack_node_t server_action::get_command_and_start_reply(const char *cstr, int &status) {
 	mpack_node_t node = mpack_node_map_cstr_optional(_rd, cstr);
 	if (mpack_node_is_missing(node)) status = 0;
 	else if (mpack_node_is_nil(node)) status = -1;
@@ -155,6 +199,14 @@ void server_action::add_error(std::string s) { _errors.push_back(s); }
 void server_action::add_warning(std::string s) { _warnings.push_back(s); }
 void server_action::add_info(std::string s) { _infos.push_back(s); }
 
+mpack_node_t server_action::request_param(const char *key) const {
+	if (!_has_params) {
+		return mpack_tree_missing_node(_request_params.tree);
+	}
+
+	return mpack_node_map_cstr_optional(_request_params, key);
+}
+
 void server_action::check_version() {
 	char client_version_major = (_request_version & 0xff0000) >> 16;
 	char client_version_minor = (_request_version & 0xff00) >> 8;
@@ -186,14 +238,14 @@ iface::iface(unsigned port) {
 }
 
 void iface::init(unsigned port) {
-	if ( (_server_fd = socket(AF_INET, SOCK_STREAM, 0) ) < 0) {
+	if ((_server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 		perror("socket failed");
 		exit(EXIT_FAILURE);
 	}
 
 	int reuseaddr = 1; // whether to reuse the address
 	if (setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-	               (void *)&reuseaddr , sizeof(reuseaddr)) ) {
+	               (void *)&reuseaddr, sizeof(reuseaddr))) {
 		perror("setsockopt failed");
 		exit(EXIT_FAILURE);
 	}
@@ -208,21 +260,23 @@ void iface::init(unsigned port) {
 		exit(EXIT_FAILURE);
 	}
 
-	if ( listen(_server_fd, 10) ) {
+	if (listen(_server_fd, 10)) {
 		perror("listen failed");
 		exit(EXIT_FAILURE);
 	}
+
+	fprintf(stderr, "Listening on %s:%u\n", inet_ntoa(_address.sin_addr), port);
 }
 
 void iface::run_stream() {
-	const unsigned max_size = 1024*1024*32;
+	const unsigned max_size = 1024 * 1024 * 32;
 	const unsigned max_nodes = 8192;
 
 	char *reply_buf = (char *)malloc(max_size);
 
 	while (_run_iface) {
 		// block until a client connects
-		if((_stream_fd.fd = accept(_server_fd, NULL, NULL)) < 0) {
+		if ((_stream_fd.fd = accept(_server_fd, NULL, NULL)) < 0) {
 			// if((my_socket = accept(stream_fd.fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
 			fprintf(stderr, "[%s line %d] socket accept failed\n", __FILE__, __LINE__);
 			exit(EXIT_FAILURE);
@@ -243,7 +297,7 @@ void iface::run_stream() {
 			mpack_tree_parse(&tree); // blocking
 			//mpack_tree_try_parse(&tree); // non-blocking, for future use
 			mpack_error_t err = mpack_tree_error(&tree);
-			if ( err != mpack_ok) {
+			if (err != mpack_ok) {
 				if (err != mpack_error_io) {
 					// mpack_error_io thrown whenever the client disconnects.
 					// Haven't found a way around this so just ignoring it for now.
@@ -255,7 +309,7 @@ void iface::run_stream() {
 
 			// Reply: use a constant buffer
 			try {
-				server_action sa(mpack_tree_root(&tree), &writer);
+				server_action sa(mpack_tree_root(&tree), &writer, &_stream_fd);
 				int sa_status = sa.process_request(); // run hardware operations or whatever else is needed
 				if (sa_status != 0) _run_iface = false; // shut down server gracefully
 				sa.finish_reply();
@@ -276,11 +330,12 @@ void iface::run_stream() {
 		}
 
 		mpack_error_t err2 = mpack_writer_destroy(&writer);
-		if (err2 != mpack_ok) fprintf(stderr, "Destroying the MPack writer failed: %s\n", mpack_error_to_string(err2));
+		if (err2 != mpack_ok and err2 != mpack_error_io) {
+			fprintf(stderr, "Destroying the MPack writer failed: %s\n", mpack_error_to_string(err2));
+		}
 
 		if (close(_stream_fd.fd) < 0) {
 			fprintf(stderr, "[%s line %d] closing socket failed\n", __FILE__, __LINE__);
-			exit(EXIT_FAILURE);
 		}
 	}
 

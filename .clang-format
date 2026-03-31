@@ -1,0 +1,85 @@
+---
+# clang-format configuration for marcos_server
+# Designed to match existing code style with minimal reformatting.
+#
+# Usage (from src/):
+#   clang-format -i *.cpp *.hpp *.h
+# Do NOT run on mpack/ (third-party, read-only).
+
+Language: Cpp
+Standard: c++17
+
+# Indentation
+UseTab: ForIndentation
+TabWidth: 8
+IndentWidth: 8
+ContinuationIndentWidth: 8
+IndentCaseLabels: false
+IndentPPDirectives: None
+IndentWrappedFunctionNames: false
+AccessModifierOffset: -8
+
+# Braces
+BreakBeforeBraces: Attach
+# No empty line around access modifiers
+EmptyLineBeforeAccessModifier: Never
+EmptyLineAfterAccessModifier: Never
+
+# Line length
+ColumnLimit: 0
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: None
+AlignEscapedNewlines: Left
+AlignOperands: DontAlign
+AlignTrailingComments:
+  Kind: Never
+
+# Pointer/reference style
+PointerAlignment: Right
+ReferenceAlignment: Right
+DerivePointerAlignment: false
+
+# Short forms
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+
+# Packing
+BinPackArguments: true
+BinPackParameters: true
+
+# Spaces
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: Never
+SpacesInParentheses: false
+Cpp11BracedListStyle: true
+
+# Breaking
+BreakBeforeBinaryOperators: NonAssignment
+BreakConstructorInitializers: AfterColon
+PackConstructorInitializers: CurrentLine
+
+# Includes (do not reorder)
+SortIncludes: Never
+SortUsingDeclarations: Never
+
+# Other
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+ReflowComments: false
+...
