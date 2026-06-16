@@ -79,6 +79,27 @@ public:
 	/// emergency stop command arrives.
 	void halt_and_reset();
 private:
+	/// @brief Pre-computed 32-bit direct-write words that drive
+	/// every gradient DAC channel to its zero-current code. The
+	/// client must register these via the set_gpa_zero_words RPC
+	/// after configuring the gradient board, because the encoding
+	/// (DAC midpoint, channel/broadcast bits, board-specific
+	/// framing) is only known to the client-side grad_board
+	/// implementation. Empty until the client populates it; in
+	/// that case halt_and_reset() cannot safely zero the DACs and
+	/// will log a warning.
+	std::vector<uint32_t> _gpa_zero_words;
+
+	/// @brief Issue a single 32-bit gradient-serialiser word as a
+	/// direct write, bypassing marga timing. Writes the MSB half
+	/// to buffer 2 (GRAD_MSB) first, then the LSB half to buffer
+	/// 1 (GRAD_LSB); the LSB write is what strobes the SPI
+	/// serialiser (see marcos_client/grad_board.py OCRA1.init_hw)
+	/// so the ordering is load-bearing. After the LSB write,
+	/// polls MAR_STATUS_GPA_MASK up to _gpa_idle_tries_limit
+	/// times waiting for the serialiser to drop busy.
+	void write_gpa_word_direct(uint32_t word);
+
 	// Config variables
 	unsigned _read_tries_limit = 1000; // retry attempts for each data sample
 	unsigned _halt_tries_limit = 1000000; // read retry attemps for HALT state at the end of the sequence

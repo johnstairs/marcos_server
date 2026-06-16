@@ -92,6 +92,23 @@ int hardware::run_request(server_action &sa) {
 		mpack_write(wr, c_ok);
 	}
 
+	// Register the per-channel "zero current" direct-write words used by
+	// halt_and_reset() to park the gradient DACs at midpoint after an
+	// emergency stop. The encoding is board-specific, so the client
+	// computes the words (via grad_board.float2bin + marcompile.col2buf)
+	// and hands them over here rather than the server hard-coding them.
+	auto gzw = sa.get_command_and_start_reply("set_gpa_zero_words", status);
+	if (status == 1) {
+		++commands_understood;
+		_gpa_zero_words.clear();
+		size_t n = mpack_node_array_length(gzw);
+		_gpa_zero_words.reserve(n);
+		for (size_t i = 0; i < n; ++i) {
+			_gpa_zero_words.push_back(mpack_node_u32(mpack_node_array_at(gzw, i)));
+		}
+		mpack_write(wr, c_ok);
+	}
+
 	// Read one register
 	auto regidx = sa.get_command_and_start_reply("regrd", status);
 	if (status == 1) {
@@ -780,14 +797,50 @@ void hardware::halt_and_reset() {
 	_slcr[92] = (_slcr[92] & ~0x03F03F30) | 0x00100700;
 
 	halt();
-	// TODO: write some immediate defaults to every buffer after
-	// it has emptied, in order of priority (i.e. first TX, next
-	// gradients)
 
-	// TODO: handle gradient reset in a clever way: set SPI
-	// divider to max, configure DAC boards, write a clear
-	// command. Should be independent of any previously-configured
-	// settings (i.e. do it for both potential GPA boards etc).
+	// Zero the TX I/Q outputs directly. Buffers 5..8 are
+	// TX0_I, TX0_Q, TX1_I, TX1_Q (see col2buf in marcompile.py).
+	for (unsigned tx_buf = 5; tx_buf <= 8; ++tx_buf) {
+		wr32(_direct, (tx_buf << 24) | 0x0000);
+	}
+
+	// Park the gradient DACs at their per-board zero-current code so
+	// the amplifier isn't left driving a static current after a cancel.
+	// The words are board-specific (OCRA1 uses 0x...10000 frames at DAC
+	// code 0; GPA-FHDO uses 0x...8000 frames at DAC code 0x8000) and
+	// must be registered ahead of time by the client via the
+	// set_gpa_zero_words RPC.
+	if (!_gpa_zero_words.empty()) {
+		for (uint32_t word : _gpa_zero_words) {
+			write_gpa_word_direct(word);
+		}
+	} else {
+		// Old client that never registered the zero words: we cannot
+		// safely zero the DACs from here, so the last sample clocked
+		// out of marga stays latched on the gradient amplifier. On a
+		// cancel mid-sequence that's a sustained DC into the coil and
+		// will thermally trip the amp.
+		fprintf(stderr,
+		        "halt_and_reset: _gpa_zero_words is empty -- client "
+		        "did not call set_gpa_zero_words; gradient DACs will "
+		        "remain latched at their last sample. Update the "
+		        "client (marcos_client Experiment.__init__) to send "
+		        "the zero words after init_hw().\n");
+	}
+}
+
+void hardware::write_gpa_word_direct(uint32_t word) {
+	// MSB to buffer 2 first, then LSB to buffer 1: the LSB write is
+	// what strobes the gradient SPI serialiser (see OCRA1.init_hw in
+	// marcos_client/grad_board.py). Reversing the order would either
+	// double-clock the serialiser or send a half-formed frame.
+	unsigned grad_msb_buf = 2, grad_lsb_buf = 1;
+	wr32(_direct, (grad_msb_buf << 24) | ((word >> 16) & 0xffff));
+	wr32(_direct, (grad_lsb_buf << 24) | (word & 0xffff));
+
+	for (unsigned k = 0; k < _gpa_idle_tries_limit; ++k) {
+		if ((rd32(_status) & MAR_STATUS_GPA_MASK) == 0) break;
+	}
 }
 
 unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,
