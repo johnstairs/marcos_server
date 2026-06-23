@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cassert>
 #include <chrono>
+#include <ctime>
 #include <vector>
 #include <sys/mman.h>
 
@@ -820,12 +821,17 @@ void hardware::halt_and_reset() {
 		// out of marga stays latched on the gradient amplifier. On a
 		// cancel mid-sequence that's a sustained DC into the coil and
 		// will thermally trip the amp.
+		char ts[32];
+		time_t now = time(nullptr);
+		struct tm tm_now;
+		localtime_r(&now, &tm_now);
+		strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_now);
 		fprintf(stderr,
-		        "halt_and_reset: _gpa_zero_words is empty -- client "
+		        "[%s] halt_and_reset: _gpa_zero_words is empty -- client "
 		        "did not call set_gpa_zero_words; gradient DACs will "
 		        "remain latched at their last sample. Update the "
 		        "client (marcos_client Experiment.__init__) to send "
-		        "the zero words after init_hw().\n");
+		        "the zero words after init_hw().\n", ts);
 	}
 }
 
