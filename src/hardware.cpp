@@ -42,7 +42,7 @@ int hardware::run_request(server_action &sa) {
 	sa.get_command_and_start_reply("halt_and_reset", status);
 	if (status == 1) {
 		++commands_understood;
-		halt_and_reset();
+		halt_and_reset(&sa);
 
 		auto exec = rd32(_exec);
 		bool halted = (exec >> 24) == MAR_STATE_IDLE;
@@ -492,7 +492,7 @@ int hardware::run_request(server_action &sa) {
 			wr32(_ctrl, 0x0);
 			// emergency halt the FSM and reset the hardware
 		} else {
-			halt_and_reset();
+			halt_and_reset(&sa);
 		}
 
 		// final buffer and gradient status checks
@@ -814,7 +814,7 @@ void hardware::halt() {
 	discard_rx();
 }
 
-void hardware::halt_and_reset() {
+void hardware::halt_and_reset(server_action *sa) {
 	// Old OCRA server comment: set FPGA clock to 143 MHz (VN: not
 	// sure how this works - probably not needed any more?)
 	_slcr[2] = 0xDF0D;
@@ -822,8 +822,10 @@ void hardware::halt_and_reset() {
 
 	halt();
 
-	// Zero the TX I/Q outputs directly. Buffers 5..8 are
-	// TX0_I, TX0_Q, TX1_I, TX1_Q (see col2buf in marcompile.py).
+	// Zero the TX I/Q outputs directly. Buffers 5..8 are TX0_I, TX0_Q,
+	// TX1_I, TX1_Q (see the buffer index constants in
+	// marcos_client/marmachine.py; marcompile.col2buf maps DSP columns
+	// onto those same indices).
 	for (unsigned tx_buf = 5; tx_buf <= 8; ++tx_buf) {
 		wr32(_direct, (tx_buf << 24) | 0x0000);
 	}
@@ -835,8 +837,19 @@ void hardware::halt_and_reset() {
 	// must be registered ahead of time by the client via the
 	// set_gpa_zero_words RPC.
 	if (!_gpa_zero_words.empty()) {
+		unsigned timeouts = 0;
 		for (uint32_t word : _gpa_zero_words) {
-			write_gpa_word_direct(word);
+			if (!write_gpa_word_direct(word)) ++timeouts;
+		}
+		if (timeouts) {
+			char msg[240];
+			snprintf(msg, sizeof(msg),
+			         "halt_and_reset: GPA serialiser stayed busy after %u of %zu"
+			         " zero-word writes (%u polls per write); the gradient DAC"
+			         " may not have been parked at zero.",
+			         timeouts, _gpa_zero_words.size(), _gpa_idle_tries_limit);
+			fprintf(stderr, "%s\n", msg);
+			if (sa) sa->add_warning(msg);
 		}
 	} else {
 		// Old client that never registered the zero words: we cannot
@@ -858,7 +871,7 @@ void hardware::halt_and_reset() {
 	}
 }
 
-void hardware::write_gpa_word_direct(uint32_t word) {
+bool hardware::write_gpa_word_direct(uint32_t word) {
 	// MSB to buffer 2 first, then LSB to buffer 1: the LSB write is
 	// what strobes the gradient SPI serialiser (see OCRA1.init_hw in
 	// marcos_client/grad_board.py). Reversing the order would either
@@ -868,8 +881,9 @@ void hardware::write_gpa_word_direct(uint32_t word) {
 	wr32(_direct, (grad_lsb_buf << 24) | (word & 0xffff));
 
 	for (unsigned k = 0; k < _gpa_idle_tries_limit; ++k) {
-		if ((rd32(_status) & MAR_STATUS_GPA_MASK) == 0) break;
+		if ((rd32(_status) & MAR_STATUS_GPA_MASK) == 0) return true;
 	}
+	return false;
 }
 
 unsigned hardware::read_rx(std::vector<uint32_t> &rx0_i, std::vector<uint32_t> &rx0_q,

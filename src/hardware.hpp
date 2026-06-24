@@ -76,8 +76,13 @@ public:
 
 	/// @brief Halt and reset all outputs to default values, even
 	/// if the cores are currently running. Activated when an
-	/// emergency stop command arrives.
-	void halt_and_reset();
+	/// emergency stop command arrives. If @p sa is non-null, any
+	/// diagnostics raised while zeroing the gradient DACs (e.g. a
+	/// GPA serialiser that fails to go idle within
+	/// ``_gpa_idle_tries_limit`` polls) are surfaced to the client
+	/// via ``server_action::add_warning`` in addition to being
+	/// logged on stderr.
+	void halt_and_reset(server_action *sa = nullptr);
 private:
 	/// @brief Pre-computed 32-bit direct-write words that drive
 	/// every gradient DAC channel to its zero-current code. The
@@ -110,7 +115,11 @@ private:
 	/// so the ordering is load-bearing. After the LSB write,
 	/// polls MAR_STATUS_GPA_MASK up to _gpa_idle_tries_limit
 	/// times waiting for the serialiser to drop busy.
-	void write_gpa_word_direct(uint32_t word);
+	///
+	/// @return true if the serialiser went idle within the poll
+	/// limit, false on timeout (the caller is responsible for
+	/// reporting the failure).
+	bool write_gpa_word_direct(uint32_t word);
 
 	// Config variables
 	unsigned _read_tries_limit = 1000; // retry attempts for each data sample
