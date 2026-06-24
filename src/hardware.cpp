@@ -109,13 +109,28 @@ int hardware::run_request(server_action &sa) {
 	auto gzw = sa.get_command_and_start_reply("set_gpa_zero_words", status);
 	if (status == 1) {
 		++commands_understood;
-		_gpa_zero_words.clear();
+		// Both supported gradient boards (OCRA1 and GPA-FHDO) expose 4
+		// channels, so the client must send exactly one zero-word per
+		// channel. A mismatch means the client is out of sync with the
+		// board configuration; reject the update rather than partially
+		// overwriting the previously-registered vector.
+		static constexpr size_t expected_gpa_zero_words = 4;
 		size_t n = mpack_node_array_length(gzw);
-		_gpa_zero_words.reserve(n);
-		for (size_t i = 0; i < n; ++i) {
-			_gpa_zero_words.push_back(mpack_node_u32(mpack_node_array_at(gzw, i)));
+		if (n != expected_gpa_zero_words) {
+			char t[160];
+			sprintf(t, "set_gpa_zero_words: received %zu words, expected %zu"
+			        " (one per gradient channel); keeping previously-registered"
+			        " words unchanged.", n, expected_gpa_zero_words);
+			sa.add_warning(t);
+			mpack_write(wr, c_warn);
+		} else {
+			_gpa_zero_words.clear();
+			_gpa_zero_words.reserve(n);
+			for (size_t i = 0; i < n; ++i) {
+				_gpa_zero_words.push_back(mpack_node_u32(mpack_node_array_at(gzw, i)));
+			}
+			mpack_write(wr, c_ok);
 		}
-		mpack_write(wr, c_ok);
 	}
 
 	// Read one register
