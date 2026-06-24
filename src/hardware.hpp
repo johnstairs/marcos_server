@@ -88,6 +88,18 @@ private:
 	/// implementation. Empty until the client populates it; in
 	/// that case halt_and_reset() cannot safely zero the DACs and
 	/// will log a warning.
+	///
+	/// Lifetime is **process-lifetime, not per-connection**: the
+	/// vector lives on the singleton ``hardware`` instance and
+	/// persists across client disconnects/reconnects for as long
+	/// as the marcos_server process is alive. This is why most
+	/// Monarch ``Experiment`` invocations can rely on an earlier
+	/// ``InitGpas`` (or any prior ``Experiment(init_gpa=True)``)
+	/// having registered the words; subsequent experiments that
+	/// pass ``init_gpa=False`` inherit the same vector. The words
+	/// are only lost when the server process exits, the FPGA is
+	/// re-flashed, or a new ``set_gpa_zero_words`` RPC clears and
+	/// rewrites the vector (e.g. when switching gradient boards).
 	std::vector<uint32_t> _gpa_zero_words;
 
 	/// @brief Issue a single 32-bit gradient-serialiser word as a

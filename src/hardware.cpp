@@ -98,6 +98,14 @@ int hardware::run_request(server_action &sa) {
 	// emergency stop. The encoding is board-specific, so the client
 	// computes the words (via grad_board.float2bin + marcompile.col2buf)
 	// and hands them over here rather than the server hard-coding them.
+	//
+	// _gpa_zero_words is process-lifetime state on the singleton hardware
+	// instance: once a client registers the words, they persist across
+	// client disconnects until the marcos_server process exits or another
+	// set_gpa_zero_words call overwrites them. Monarch relies on this --
+	// the initial InitGpas action (or any earlier Experiment with
+	// init_gpa=True) registers the words, and subsequent Experiments that
+	// pass init_gpa=False inherit them without re-registering.
 	auto gzw = sa.get_command_and_start_reply("set_gpa_zero_words", status);
 	if (status == 1) {
 		++commands_understood;
