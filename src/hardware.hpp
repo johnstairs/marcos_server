@@ -76,9 +76,51 @@ public:
 
 	/// @brief Halt and reset all outputs to default values, even
 	/// if the cores are currently running. Activated when an
-	/// emergency stop command arrives.
-	void halt_and_reset();
+	/// emergency stop command arrives. If @p sa is non-null, any
+	/// diagnostics raised while zeroing the gradient DACs (e.g. a
+	/// GPA serialiser that fails to go idle within
+	/// ``_gpa_idle_tries_limit`` polls) are surfaced to the client
+	/// via ``server_action::add_warning`` in addition to being
+	/// logged on stderr.
+	void halt_and_reset(server_action *sa = nullptr);
 private:
+	/// @brief Pre-computed 32-bit direct-write words that drive
+	/// every gradient DAC channel to its zero-current code. The
+	/// client must register these via the set_gpa_zero_words RPC
+	/// after configuring the gradient board, because the encoding
+	/// (DAC midpoint, channel/broadcast bits, board-specific
+	/// framing) is only known to the client-side grad_board
+	/// implementation. Empty until the client populates it; in
+	/// that case halt_and_reset() cannot safely zero the DACs and
+	/// will log a warning.
+	///
+	/// Lifetime is **process-lifetime, not per-connection**: the
+	/// vector lives on the singleton ``hardware`` instance and
+	/// persists across client disconnects/reconnects for as long
+	/// as the marcos_server process is alive. This is why most
+	/// Monarch ``Experiment`` invocations can rely on an earlier
+	/// ``InitGpas`` (or any prior ``Experiment(init_gpa=True)``)
+	/// having registered the words; subsequent experiments that
+	/// pass ``init_gpa=False`` inherit the same vector. The words
+	/// are only lost when the server process exits, the FPGA is
+	/// re-flashed, or a new ``set_gpa_zero_words`` RPC clears and
+	/// rewrites the vector (e.g. when switching gradient boards).
+	std::vector<uint32_t> _gpa_zero_words;
+
+	/// @brief Issue a single 32-bit gradient-serialiser word as a
+	/// direct write, bypassing marga timing. Writes the MSB half
+	/// to buffer 2 (GRAD_MSB) first, then the LSB half to buffer
+	/// 1 (GRAD_LSB); the LSB write is what strobes the SPI
+	/// serialiser (see marcos_client/grad_board.py OCRA1.init_hw)
+	/// so the ordering is load-bearing. After the LSB write,
+	/// polls MAR_STATUS_GPA_MASK up to _gpa_idle_tries_limit
+	/// times waiting for the serialiser to drop busy.
+	///
+	/// @return true if the serialiser went idle within the poll
+	/// limit, false on timeout (the caller is responsible for
+	/// reporting the failure).
+	bool write_gpa_word_direct(uint32_t word);
+
 	// Config variables
 	unsigned _read_tries_limit = 1000; // retry attempts for each data sample
 	unsigned _halt_tries_limit = 1000000; // read retry attemps for HALT state at the end of the sequence
